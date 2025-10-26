@@ -1,0 +1,1 @@
+cd directory then run pipreqs . to generate requirements.txt
