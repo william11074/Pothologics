@@ -8,12 +8,14 @@ from shapely.geometry import MultiPoint
 import datetime
 
 class PotholeRepairOptimizer:
+    # filepath will be changed to csv file with real detection once in production
     def __init__(self, filepath="./detections_simulated.csv"):
         self.df = pd.read_csv(filepath)
         self.cluster_routes = {}
         self.route_stats = {}
         self.cluster_polygons = {}
-        # Normalize columns if using detections_simulated.csv (lat/lon -> latitude/longitude)
+        
+        # Help reroute column names
         rename_map = {}
         if 'lat' in self.df.columns and 'latitude' not in self.df.columns:
             rename_map['lat'] = 'latitude'
@@ -21,16 +23,16 @@ class PotholeRepairOptimizer:
             rename_map['lon'] = 'longitude'
         if rename_map:
             self.df = self.df.rename(columns=rename_map)
-
-        # Provide optional fields if present in detections CSV
         if 'start_timestamp' in self.df.columns and 'report_date' not in self.df.columns:
             try:
                 self.df['report_date'] = pd.to_datetime(self.df['start_timestamp'], errors='coerce').dt.date.astype(str)
             except Exception:
                 self.df['report_date'] = self.df['start_timestamp']
         
+    # pothole clustering algorithm using DBSCAN
+    # eps_km is the maximum distance between two samples for one to be considered
+    # min_samples is the minimum number of potholes per cluster needed
     def cluster_potholes(self, eps_km=0.2, min_samples=3):
-        # cluster potholes using DBSCAN
         if not {'latitude','longitude'}.issubset(self.df.columns):
             raise ValueError("Input must have latitude/longitude columns (or lat/lon).")
         coords = self.df[['latitude', 'longitude']].values
@@ -47,7 +49,6 @@ class PotholeRepairOptimizer:
         
         self.labels = db.labels_
         
-        # Create cluster polygons
         for cluster_id in set(self.labels):
             if cluster_id == -1:
                 continue
@@ -62,8 +63,8 @@ class PotholeRepairOptimizer:
         
         return self.df
     
+    # Calculate distance between two potholes in km (accounting for earth curvature)
     def haversine_distance(self, point1, point2):
-        """Calculate haversine distance between two points in km"""
         lat1, lon1 = np.radians(point1)
         lat2, lon2 = np.radians(point2)
         dlat = lat2 - lat1
@@ -71,8 +72,11 @@ class PotholeRepairOptimizer:
         a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
         return 6371 * 2 * np.arcsin(np.sqrt(a))
     
+    # generate optimized repair routes for each cluster
+    # speed_kmh is the average travel speed between pothole locations
+    # repair_time_mins is the average time to repair reach pothole
+    # input data is used to estimate the repair time per route
     def optimize_routes(self, speed_kmh=30, repair_time_mins=15):
-        """Optimize repair routes and assign sequential route IDs starting at 1."""
         unique_clusters = [int(c) for c in np.unique(self.labels) if c != -1]
         for idx, cluster_label in enumerate(sorted(unique_clusters)):
             route_id = idx + 1
@@ -81,11 +85,13 @@ class PotholeRepairOptimizer:
             cluster_points = self.df.iloc[idxs]
             coords = cluster_points[['latitude', 'longitude']].values
 
-            # Create distance matrix
             dist_matrix = cdist(coords, coords, lambda u, v: self.haversine_distance(u, v))
 
             n = len(coords)
-            # Solve TSP: brute force for small n, otherwise greedy
+            
+            # traveling salesman problem optimization
+            # for 9 or less potholes, brute forcing O(n!) is favorable
+            # for more potholes, greedy algorithm is implemented
             if n < 10:
                 from itertools import permutations
                 best_order = None
@@ -98,7 +104,7 @@ class PotholeRepairOptimizer:
                         best_order = candidate
                 route = best_order if best_order is not None else list(range(n))
             else:
-                route = [0]  # Start with first point
+                route = [0]
                 unvisited = set(range(1, n))
                 while unvisited:
                     last = route[-1]
@@ -123,14 +129,13 @@ class PotholeRepairOptimizer:
             }
 
         return self.cluster_routes, self.route_stats
-    # Removed HTML visualization; this script now focuses on CSV outputs only.
     
+    # put the work orders into csv file
     def generate_work_orders_csv(self, filename="work_orders.csv"):
-        """Write work orders to CSV (sequential route IDs, no crew)."""
         if not self.cluster_routes:
             raise ValueError("Run optimize_routes() first")
 
-        # Load persisted route colors if present
+        # Load road colors from JSON file
         colors_map = {}
         try:
             colors_path = Path('route_colors.json')
@@ -169,8 +174,8 @@ class PotholeRepairOptimizer:
         work_orders.to_csv(filename, index=False)
         return filename
 
+    # route summary csv generation, for summary statistics only
     def generate_route_summary_csv(self, filename="route_summary.csv"):
-        """One row per route with summary stats and endpoints (no crew)."""
         if not self.cluster_routes:
             raise ValueError("Run optimize_routes() first")
 
@@ -203,23 +208,24 @@ class PotholeRepairOptimizer:
         df.to_csv(filename, index=False)
         return filename
 
-# Example usage
+# generate each cluster and optimize repair routes
+# should be run every time a new pothole is detected or a route is deleted
 if __name__ == "__main__":
     optimizer = PotholeRepairOptimizer("./detections_simulated.csv")
     
-    # Step 1: Cluster potholes
+    # cluster potholes
     optimizer.cluster_potholes()
     num_clusters = len([c for c in set(getattr(optimizer, 'labels', [])) if c != -1])
     print(f"Found {num_clusters} clusters")
     
-    # Step 2: Optimize routes
+    # optimize repair routes
     routes, stats = optimizer.optimize_routes()
     print("\nRoute Statistics:")
     for cluster_id, stat in stats.items():
         print(f"Cluster {cluster_id}: {stat['num_potholes']} potholes, "
               f"{stat['total_km']}km, {stat['total_time_mins']}mins")
     
-        # Step 3: Generate CSVs only (no HTML output)
+    # generate work orders and route summary csv files
     work_orders_csv = optimizer.generate_work_orders_csv('work_orders.csv')
     summary_csv = optimizer.generate_route_summary_csv('route_summary.csv')
     print(f"\nWork orders saved to {work_orders_csv}")

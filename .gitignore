@@ -1,2 +1,3 @@
 .env
 venv/
+/Data_analytics/__pycache__/

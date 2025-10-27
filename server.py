@@ -266,7 +266,7 @@ def supabase_status():
 # Background recluster pipeline
 # =========================
 _recluster_lock = threading.Lock()
-_recluster_pending = False
+_recluster_pending_keys: set[str] = set()
 
 def _import_optimizer():
     try:
@@ -294,6 +294,17 @@ def _run_recluster(input_csv: str = "detections.csv") -> bool:
         opt.optimize_routes()
         opt.generate_work_orders_csv('work_orders.csv')
         opt.generate_route_summary_csv('route_summary.csv')
+        # Write meta about the source used for current work orders
+        try:
+            meta = {
+                'source_csv': str(Path(input_csv).name if Path(input_csv).exists() else input_csv),
+                'source_path': str(Path(input_csv)),
+                'updated_at': datetime.utcnow().isoformat() + 'Z'
+            }
+            with Path('work_orders_meta.json').open('w', encoding='utf-8') as f:
+                json.dump(meta, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
         # Notify clients via SSE
         broadcast_routes_update({
             'type': 'routesUpdated',
@@ -304,33 +315,160 @@ def _run_recluster(input_csv: str = "detections.csv") -> bool:
     except Exception:
         return False
 
-def schedule_recluster(delay_s: float = 1.0):
-    """Debounce recluster job so rapid inserts coalesce into one run."""
-    global _recluster_pending
+def schedule_recluster_for(csv_path: str, delay_s: float = 1.0):
+    """Debounce recluster by CSV path so rapid inserts coalesce into one run per source."""
+    key = str(Path(csv_path))
     with _recluster_lock:
-        if _recluster_pending:
+        if key in _recluster_pending_keys:
             return
-        _recluster_pending = True
+        _recluster_pending_keys.add(key)
 
     def worker():
         import time as _time
         try:
             _time.sleep(max(0.1, float(delay_s)))
-            _run_recluster("detections.csv")
+            _run_recluster(key)
         finally:
-            global _recluster_pending
             with _recluster_lock:
-                _recluster_pending = False
+                _recluster_pending_keys.discard(key)
 
     threading.Thread(target=worker, daemon=True).start()
+
+def schedule_recluster(delay_s: float = 1.0):
+    """Compatibility wrapper: schedule recluster for detections.csv."""
+    schedule_recluster_for("detections.csv", delay_s)
 
 @app.route('/api/recluster', methods=['POST','OPTIONS'])
 def api_recluster():
     if request.method == 'OPTIONS':
         return add_cors(make_response("", 204))
     try:
-        schedule_recluster(delay_s=0.1)
+        csv_path = (request.get_json(silent=True) or {}).get('csv') or 'detections.csv'
+        schedule_recluster_for(csv_path, delay_s=0.1)
         return add_cors(jsonify({ 'scheduled': True }))
+    except Exception as e:
+        return add_cors(jsonify({ 'error': str(e) })), 400
+
+@app.route('/api/routes/meta', methods=['GET'])
+def api_routes_meta():
+    """Return metadata about the current work_orders (e.g., source CSV)."""
+    meta_path = Path('work_orders_meta.json')
+    if meta_path.exists():
+        try:
+            with meta_path.open('r', encoding='utf-8') as f:
+                return add_cors(jsonify(json.load(f)))
+        except Exception:
+            pass
+    # Fallback: unknown
+    return add_cors(jsonify({ 'source_csv': None, 'source_path': None, 'updated_at': None }))
+
+# =========================
+# Mark route as fixed (remove its potholes and rebuild)
+# =========================
+def _haversine_km(lat1, lon1, lat2, lon2):
+    from math import radians, sin, cos, asin, sqrt
+    R = 6371.0088
+    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    return 2 * R * asin(sqrt(a))
+
+def _remove_points_from_csv(csv_path: Path, points: list[tuple[float,float]], tol_m: float) -> int:
+    if not csv_path.exists() or not points:
+        return 0
+    tol_km = max(0.0, float(tol_m)) / 1000.0
+    removed = 0
+    with csv_path.open('r', encoding='utf-8', newline='') as f:
+        reader = csv.reader(f)
+        headers = next(reader, [])
+        # locate lat/lon columns
+        cols = {h.lower(): i for i, h in enumerate(headers)}
+        lat_col = cols.get('lat') or cols.get('latitude')
+        lon_col = cols.get('lon') or cols.get('longitude')
+        if lat_col is None or lon_col is None:
+            return 0
+        rows = []
+        for r in reader:
+            try:
+                lat = float(r[lat_col]); lon = float(r[lon_col])
+            except Exception:
+                rows.append(r)
+                continue
+            close = False
+            for (plat, plon) in points:
+                try:
+                    if _haversine_km(lat, lon, plat, plon) <= tol_km:
+                        close = True
+                        break
+                except Exception:
+                    continue
+            if close:
+                removed += 1
+            else:
+                rows.append(r)
+    tmp = csv_path.with_suffix(csv_path.suffix + ".tmp")
+    with tmp.open('w', encoding='utf-8', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(headers)
+        w.writerows(rows)
+    tmp.replace(csv_path)
+    return removed
+
+@app.route('/api/routes/fix', methods=['POST','OPTIONS'])
+def api_fix_route():
+    if request.method == 'OPTIONS':
+        return add_cors(make_response("", 204))
+    try:
+        payload = request.get_json(force=True) or {}
+        route_id = payload.get('route_id')
+        if route_id is None:
+            return add_cors(jsonify({ 'error': 'route_id required' })), 400
+        route_id = str(route_id)
+        tol_m = float(payload.get('tolerance_m', 5.0))  # default 5 meters
+        # Default source: use latest work_orders source if present
+        meta_src = None
+        try:
+            with Path('work_orders_meta.json').open('r', encoding='utf-8') as f:
+                meta_src = (json.load(f) or {}).get('source_path') or (json.load(f) or {}).get('source_csv')
+        except Exception:
+            meta_src = None
+        source = payload.get('source')
+        if not source:
+            source = meta_src or 'simulated'
+        source = str(source).lower()
+        # Choose CSV source
+        if source == 'simulated':
+            csv_path = Path('detections_simulated.csv')
+        elif source == 'real':
+            csv_path = Path('detections.csv')
+        else:
+            csv_path = Path(source)
+
+        # Read work_orders to get points for this route
+        wo = Path('work_orders.csv')
+        if not wo.exists():
+            return add_cors(jsonify({ 'error': 'work_orders.csv not found' })), 404
+        points: list[tuple[float,float]] = []
+        with wo.open('r', encoding='utf-8', newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if str(row.get('route_id')) == route_id:
+                    try:
+                        lat = float(row.get('latitude'))
+                        lon = float(row.get('longitude'))
+                        points.append((lat, lon))
+                    except Exception:
+                        continue
+        if not points:
+            return add_cors(jsonify({ 'error': f'route {route_id} not found or has no points' })), 404
+
+        removed = _remove_points_from_csv(csv_path, points, tol_m)
+
+        # Rebuild work orders from the chosen source CSV
+        schedule_recluster_for(str(csv_path), delay_s=0.1)
+
+        return add_cors(jsonify({ 'ok': True, 'route_id': route_id, 'removed': removed, 'source': str(csv_path) }))
     except Exception as e:
         return add_cors(jsonify({ 'error': str(e) })), 400
 

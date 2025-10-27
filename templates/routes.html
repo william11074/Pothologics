@@ -74,12 +74,18 @@
       attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
 
+    // Ensure routes draw above detections using custom panes
+    map.createPane('detections');
+    map.getPane('detections').style.zIndex = 390; // below default overlayPane (400)
+    map.createPane('routes');
+    map.getPane('routes').style.zIndex = 410; // above default overlayPane
+
     const DEFAULT_ROUTE_COLOR = '#1f77b4';
     let savedRouteColors = {}; // { route_id: '#RRGGBB' }
     let routeLayers = new Map(); // route_id -> {polyline, markers:[], color}
     let currentData = null;      // rows from work_orders.csv
     let currentGrouped = new Map(); // route_id -> pts[] (from currentData)
-    const detectionsLayer = L.layerGroup().addTo(map);
+    const detectionsLayer = L.layerGroup(undefined, { pane: 'detections' }).addTo(map);
     let detMarkers = []; // { marker, baseRadius }
 
     function clearMap() {
@@ -129,7 +135,7 @@
           <input type="color" value="${color}" data-color-for="${routeId}" class="w-8 h-6 p-0 border border-slate-700 rounded bg-slate-800" />
         `;
         // click on label opens details
-        row.querySelector('[data-route]')?.addEventListener('click', () => renderRouteDetails(routeId));
+        row.querySelector('[data-route]')?.addEventListener('click', () => { renderRouteDetails(routeId); fitRoute(routeId); });
         // color input saves immediately
         row.querySelector('[data-color-for]')?.addEventListener('input', (e) => {
           const newColor = e.target.value;
@@ -153,6 +159,13 @@
       });
     }
 
+    function fitRoute(routeId) {
+      const pts = (currentGrouped.get(routeId) || []).map(p => [parseFloat(p.latitude), parseFloat(p.longitude)]).filter(ll => Number.isFinite(ll[0]) && Number.isFinite(ll[1]));
+      if (!pts.length) return;
+      const bounds = L.latLngBounds(pts);
+      map.fitBounds(bounds, { padding: [20, 20] });
+    }
+
     function renderRouteDetails(routeId) {
       const pts = (currentGrouped.get(routeId) || []).slice().sort((a, b) => Number(a.route_order) - Number(b.route_order));
       const csvColor = (pts[0] && pts[0].route_color) ? String(pts[0].route_color) : null;
@@ -160,10 +173,57 @@
       const stats = pts[0] || {};
       const km = stats.total_km ?? '—';
       const mins = stats.total_time_mins ?? '—';
-      const header = `<div class="mb-2"><button id="btnBackLegend" class="text-xs px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 mr-2">Back</button><span class="inline-block w-3 h-3 mr-2 rounded" style="background:${color}"></span><span class="font-semibold">Route ${routeId}</span> • ${km} km • ${mins} mins</div>`;
+      const header = `
+        <div class="mb-2 flex items-center flex-wrap gap-2">
+          <button id="btnBackLegend" class="text-xs px-2 py-1 rounded bg-slate-800 hover:bg-slate-700">Back</button>
+          <button id="btnZoomRoute" class="text-xs px-2 py-1 rounded bg-slate-800 hover:bg-slate-700">Zoom</button>
+          <span class="inline-block w-3 h-3 rounded" style="background:${color}"></span>
+          <span class="font-semibold">Route ${routeId}</span>
+          <span class="text-gray-400">• ${km} km • ${mins} mins</span>
+          <span class="ml-auto flex items-center gap-2">
+            <label class="text-xs text-gray-300">Dataset</label>
+            <select id="datasetSelect" class="text-xs bg-slate-800 text-gray-200 rounded px-1 py-0.5">
+              <option value="simulated" selected>Simulated</option>
+              <option value="real">Real</option>
+            </select>
+            <button id="btnMarkComplete" class="text-xs px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white">Mark Complete</button>
+          </span>
+        </div>`;
       const rows = pts.map((p, i) => `<div class="py-1 border-b border-slate-800/50 text-gray-200"><span class="text-gray-400 mr-2">#${i + 1}</span>${Number(p.latitude).toFixed(5)}, ${Number(p.longitude).toFixed(5)}<span class="ml-2 text-gray-400">${p.severity ? 'Severity: ' + p.severity : ''}</span>${p.report_date ? `<span class=\"ml-2 text-gray-400\">Reported: ${p.report_date}</span>` : ''}</div>`).join('');
       legend.innerHTML = header + `<div>${rows || '<div class="text-gray-400">No stops</div>'}</div>`;
+      // Set dataset default based on current work_orders source
+      try {
+        const dsSelInit = document.getElementById('datasetSelect');
+        if (dsSelInit) {
+          const defSrc = ((workOrdersMeta.source_path || workOrdersMeta.source_csv || '') + '').toLowerCase().includes('detections.csv') ? 'real' : 'simulated';
+          dsSelInit.value = defSrc;
+        }
+      } catch (e) { /* ignore */ }
       document.getElementById('btnBackLegend')?.addEventListener('click', () => renderLegendSummary());
+      document.getElementById('btnZoomRoute')?.addEventListener('click', () => fitRoute(routeId));
+      document.getElementById('btnMarkComplete')?.addEventListener('click', async () => {
+        try {
+          const btn = document.getElementById('btnMarkComplete');
+          const ds = document.getElementById('datasetSelect');
+          btn.disabled = true; btn.textContent = 'Submitting…';
+          statusEl.textContent = `Marking route ${routeId} complete…`;
+          const source = ds?.value || 'simulated';
+          const resp = await fetch('/api/routes/fix', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ route_id: routeId, source })
+          });
+          const j = await resp.json();
+          if (!resp.ok) throw new Error(j?.error || 'Request failed');
+          statusEl.textContent = `Route ${routeId} marked complete. Removed ${j.removed} detections.`;
+          // Reload routes after server rebuild (SSE will also refresh)
+          setTimeout(() => loadDefault(), 500);
+        } catch (e) {
+          statusEl.textContent = `Failed to mark complete: ${e}`;
+        } finally {
+          const btn = document.getElementById('btnMarkComplete');
+          if (btn) { btn.disabled = false; btn.textContent = 'Mark Complete'; }
+        }
+      });
     }
 
     function plotRoutes(data) {
@@ -186,16 +246,17 @@
         const color = savedRouteColors[String(routeId)] || csvColor || DEFAULT_ROUTE_COLOR;
         const latlngs = pts.map(p => [parseFloat(p.latitude), parseFloat(p.longitude)]);
         if (latlngs.length === 0) return;
-        const line = L.polyline(latlngs, { color, weight: 3, opacity: 0.8 }).addTo(map);
+        const line = L.polyline(latlngs, { color, weight: 4, opacity: 0.95, pane: 'routes' }).addTo(map);
         line.on('click', () => {
           // Bounce the legend to route details and emphasize selected line
           renderRouteDetails(routeId);
+          fitRoute(routeId);
           try { line.bringToFront(); } catch(e) {}
           line.setStyle({ weight: 5, opacity: 1.0 });
           setTimeout(() => line.setStyle({ weight: 3, opacity: 0.8 }), 800);
         });
         const markers = pts.map((p, i) => {
-          const m = L.circleMarker([parseFloat(p.latitude), parseFloat(p.longitude)], { radius: 5, color, fillColor: color, fillOpacity: 0.8 }).addTo(map);
+          const m = L.circleMarker([parseFloat(p.latitude), parseFloat(p.longitude)], { radius: 5, color, fillColor: color, fillOpacity: 0.85, pane: 'routes' }).addTo(map);
           const sev = p.severity ?? 'N/A';
           const rep = p.report_date ?? 'N/A';
           m.bindPopup(`<div><b>Route ${routeId}</b><br>#${i + 1}<br>Severity: ${sev}<br>Report: ${rep}</div>`);
@@ -304,7 +365,7 @@
         detMarkers = [];
         dets.forEach(d => {
           const baseRadius = 4 + Math.min(8, Math.max(0, (parseFloat(d.confidence || 0) || 0) * 6));
-          const m = L.circleMarker([d.lat, d.lon], { radius: baseRadius, color, fillColor: color, fillOpacity: 0.45 }).addTo(detectionsLayer);
+          const m = L.circleMarker([d.lat, d.lon], { radius: baseRadius, color, fillColor: color, fillOpacity: 0.35, pane: 'detections' }).addTo(detectionsLayer);
           const dur = isNaN(d.duration_s) ? '' : `${Number(d.duration_s).toFixed(0)}s`;
           const conf = d.confidence != null ? `Conf: ${Number(d.confidence).toFixed(2)}` : '';
           const img = d.image_url ? `<div class="mt-1"><img src="${d.image_url}" alt="detection" class="max-w-[180px] rounded"/></div>` : '';

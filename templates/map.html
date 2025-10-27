@@ -49,7 +49,7 @@
                     const pts = grouped[rid].sort((a, b) => a.route_order - b.route_order);
                     const latlngs = pts.map(p => [p.latitude, p.longitude]);
                     if (latlngs.length) {
-                        L.polyline(latlngs, { color: ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'][i % 4], weight: 4, opacity: 0.9 }).addTo(routeLayer);
+                        L.polyline(latlngs, { color: ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'][i % 4], weight: 5, opacity: 0.95, pane: 'routes' }).addTo(routeLayer);
                     }
                 });
                 const b = routeLayer.getBounds();
@@ -102,6 +102,12 @@
             attribution: '&copy; OpenStreetMap contributors'
         }).addTo(map);
 
+        // Panes so routes draw above detections/markers
+        map.createPane('detections');
+        map.getPane('detections').style.zIndex = 590; // below markerPane (600)
+        map.createPane('routes');
+        map.getPane('routes').style.zIndex = 650; // above markers/clusters
+
         // Layers for dynamic content
         const potholeCluster = (L.markerClusterGroup ? L.markerClusterGroup({ disableClusteringAtZoom: 17 }) : L.layerGroup());
         function styleForPothole(f) {
@@ -113,12 +119,13 @@
             return { radius: 5, color, weight: 1.5, fillColor: color, fillOpacity: 0.7 };
         }
         const potholeLayer = L.geoJSON(null, {
-            pointToLayer: (f, latlng) => L.circleMarker(latlng, styleForPothole(f)),
+            pointToLayer: (f, latlng) => L.circleMarker(latlng, { ...styleForPothole(f), pane: 'detections' }),
             onEachFeature: (f, layer) => layer.bindPopup(popupForPothole(f))
         });
         potholeCluster.addLayer(potholeLayer).addTo(map);
 
         const routeLayer = L.geoJSON(null, {
+            pane: 'routes',
             style: f => ({
                 color: f?.properties?.color || '#1976d2',
                 weight: f?.properties?.weight || 5,
