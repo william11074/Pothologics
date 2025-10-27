@@ -7,13 +7,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Flask, request, jsonify, send_from_directory, make_response, send_file, render_template
+
+# Load API keys from .env file
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except Exception:
     load_dotenv = None
 
-# --- YOLO model ---
+# Load YOLO model
 MODEL = "best.pt"
 YOLO_OK = False
 try:
@@ -25,12 +27,11 @@ try:
 except Exception:
     YOLO_OK = False
 
-# --- Flask app ---
-# Serve Jinja templates from ./templates and static assets from the same folder at /static
+# Set up flask app
 app = Flask(__name__, template_folder="templates", static_folder="static", static_url_path="/static")
-app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 5MB frame limit
+app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024
 
-# --- Supabase config ---
+# Set up Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "detections")
@@ -39,7 +40,7 @@ SUPABASE = None
 
 try:
     if SUPABASE_URL and SUPABASE_KEY:
-        from supabase import create_client  # type: ignore
+        from supabase import create_client
         SUPABASE = create_client(SUPABASE_URL, SUPABASE_KEY)
 except Exception:
     SUPABASE = None
@@ -47,35 +48,99 @@ except Exception:
 def supabase_enabled():
     return SUPABASE is not None
 
+# Upload JPEG to Supabase storage (pothole detection images)
 def supabase_upload_jpeg(content: bytes, path: str) -> str | None:
     try:
         if not supabase_enabled():
             return None
         try:
-            SUPABASE.storage.create_bucket(SUPABASE_BUCKET, public=True)  # type: ignore
+            SUPABASE.storage.create_bucket(SUPABASE_BUCKET, public=True)
         except Exception:
             pass
-        SUPABASE.storage.from_(SUPABASE_BUCKET).upload(path,
-    content,
-    {"contentType": "image/jpeg", "upsert": "true"})  # type: ignore
-        return SUPABASE.storage.from_(SUPABASE_BUCKET).get_public_url(path)  # type: ignore
+        SUPABASE.storage.from_(SUPABASE_BUCKET).upload( 
+            path,
+            content,
+            {"contentType": "image/jpeg", "upsert": "true"}
+        )
+        return SUPABASE.storage.from_(SUPABASE_BUCKET).get_public_url(path)
     except Exception:
         return None
 
+# insert detection record into Supabase table
 def supabase_insert_detection(record: dict) -> None:
     try:
         if not supabase_enabled():
             return
-        SUPABASE.table(SUPABASE_TABLE).insert(record).execute()  # type: ignore
+        SUPABASE.table(SUPABASE_TABLE).insert(record).execute()
     except Exception:
         pass
 
-# --- Simple in-memory tracker (per device) ---
-IOU_THRESHOLD = float(os.getenv("TRACK_IOU", 0.5))
-MAX_MISSED_FRAMES = int(os.getenv("TRACK_MAX_MISSED", 2))
+# Server sent events (SSE) broadcaster (for live update of the map)
+import queue
+import threading
+
+_listeners_lock = threading.Lock()
+_listeners: list[queue.SimpleQueue] = []
+
+def broadcast_routes_update(payload: dict):
+    with _listeners_lock:
+        for q in list(_listeners):
+            try:
+                q.put(payload)
+            except Exception:
+                pass
+
+# SSE endpoint for clients to receive live updates
+@app.route('/events')
+def sse_events():
+    def gen():
+        q: queue.SimpleQueue = queue.SimpleQueue()
+        with _listeners_lock:
+            _listeners.append(q)
+        try:
+            # Initial ping
+            yield f"data: {json.dumps({'type':'hello','ts':datetime.utcnow().isoformat()+'Z'})}\n\n"
+            # Heartbeat
+            import time
+            last_beat = time.time()
+            while True:
+                try:
+                    item = q.get(timeout=5)
+                    yield f"data: {json.dumps(item)}\n\n"
+                except Exception:
+                    if time.time() - last_beat > 20:
+                        yield "data: {\"type\":\"heartbeat\"}\n\n"
+                        last_beat = time.time()
+        finally:
+            with _listeners_lock:
+                if q in _listeners:
+                    _listeners.remove(q)
+
+    resp = app.response_class(gen(), mimetype='text/event-stream')
+    resp.headers['Cache-Control'] = 'no-cache'
+    resp.headers['X-Accel-Buffering'] = 'no'
+    return resp
+
+# Broadcast whenever a route is updated
+@app.route('/api/routes/notify', methods=['POST'])
+def notify_routes():
+    try:
+        payload = request.get_json(force=True) or {}
+        # Assign a default type if not provided
+        if 'type' not in payload:
+            payload['type'] = 'routesUpdated'
+        broadcast_routes_update(payload)
+        return add_cors(jsonify({ 'ok': True }))
+    except Exception as e:
+        return add_cors(jsonify({ 'error': str(e) })), 400
+
+# Memory tracker for detections
+IOU_THRESHOLD = float(os.getenv("TRACK_IOU", 0.5))        # Not used when using Ultralytics IDs, kept for compatibility
+MAX_MISSED_FRAMES = int(os.getenv("TRACK_MAX_MISSED", 2)) # Finalize if not seen for this many consecutive frames + 1
 TRACKS: dict[str, list[dict]] = {}
 
 def _iou(a, b):
+    """Compute intersection-over-union (unused in current assignment by track ID)."""
     ax1, ay1, ax2, ay2 = a
     bx1, by1, bx2, by2 = b
     inter_x1 = max(ax1, bx1); inter_y1 = max(ay1, by1)
@@ -89,13 +154,21 @@ def _iou(a, b):
     return (inter / union) if union > 0 else 0.0
 
 def _finalize_track(device_id: str, t: dict):
+    """
+    Finalize a track:
+    - compute duration
+    - upload best crop to storage (if present)
+    - append a single row to local CSV
+    - mirror to Supabase table
+    """
     start_dt = t["start_dt"]
     end_dt = t["last_dt"]
     duration_s = max(0.0, (end_dt - start_dt).total_seconds())
+    # Normalize to RFC3339 UTC
     start_ts = start_dt.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
     end_ts = end_dt.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
 
-    # Upload best image if any
+    # Upload the best frame crop, if we captured one
     image_url = None
     if t.get("best_img_bytes"):
         img_uuid = t.get("id") or str(uuid.uuid4())
@@ -103,19 +176,22 @@ def _finalize_track(device_id: str, t: dict):
         img_path = f"{device_id}/{day}/{img_uuid}.jpg"
         image_url = supabase_upload_jpeg(t["best_img_bytes"], img_path)
 
-    # Append to CSV as an event (single row per track)
+    # Append a single, finalized track row to local CSV (debug-friendly)
     out = Path("detections.csv")
     new_file = not out.exists()
     with out.open("a", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         if new_file:
-            w.writerow(["detection_id","device_id","cls","start_timestamp","end_timestamp","duration_s","lat","lon","accuracy","confidence_peak","image_url"])
+            w.writerow([
+                "detection_id","device_id","cls","start_timestamp","end_timestamp",
+                "duration_s","lat","lon","confidence_peak","image_url"
+            ])
         w.writerow([
             t.get("id"), device_id, t.get("cls"), start_ts, end_ts, f"{duration_s:.3f}",
-            t.get("best_lat"), t.get("best_lon"), t.get("best_acc"), t.get("best_conf"), image_url
+            t.get("best_lat"), t.get("best_lon"), t.get("best_conf"), image_url
         ])
 
-    # Mirror to Supabase table (best-effort)
+    # Mirror to Supabase table (single row per finalized object)
     supabase_insert_detection({
         "detection_id": t.get("id"),
         "device_id": device_id,
@@ -125,13 +201,20 @@ def _finalize_track(device_id: str, t: dict):
         "duration_s": duration_s,
         "lat": t.get("best_lat"),
         "lon": t.get("best_lon"),
-        "accuracy": t.get("best_acc"),
+        # NOTE: your table column is 'confidence_peak'; match that name here if needed
         "confidence": t.get("best_conf"),
         "image_url": image_url,
     })
 
+# =========================
+# Health check for Supabase
+# =========================
 @app.route("/api/supabase/status", methods=["GET"])
 def supabase_status():
+    """
+    Show whether Supabase is configured and reachable.
+    Also attempts a small storage upload/remove and a table select(*).
+    """
     info = {
         "configured": bool(SUPABASE_URL and SUPABASE_KEY),
         "enabled": supabase_enabled(),
@@ -143,16 +226,18 @@ def supabase_status():
     if not supabase_enabled():
         return add_cors(jsonify(info))
 
-    # Storage test: try create bucket (no-op if exists), upload and remove a tiny file
+    # Storage test: create bucket (no-op if exists), upload small file, then remove it
     try:
         try:
             SUPABASE.storage.create_bucket(SUPABASE_BUCKET, public=True)  # type: ignore
         except Exception:
             pass
         test_path = f"_health/{uuid.uuid4()}.txt"
-        SUPABASE.storage.from_(SUPABASE_BUCKET).upload(test_path,
-    b"ok",
-    {"contentType": "text/plain", "upsert": "true"})  # type: ignore
+        SUPABASE.storage.from_(SUPABASE_BUCKET).upload(  # type: ignore
+            test_path,
+            b"ok",
+            {"contentType": "text/plain", "upsert": "true"}  # strings to satisfy some client versions
+        )
         # Some client versions require list for remove
         try:
             SUPABASE.storage.from_(SUPABASE_BUCKET).remove(test_path)  # type: ignore
@@ -162,7 +247,7 @@ def supabase_status():
     except Exception as e:
         info["tests"]["storage"] = str(e)
 
-    # Table test: simple select with limit 1
+    # Table test: basic select
     try:
         SUPABASE.table(SUPABASE_TABLE).select("*").limit(1).execute()  # type: ignore
         info["tests"]["table_select"] = True
@@ -171,8 +256,11 @@ def supabase_status():
 
     return add_cors(jsonify(info))
 
-# --- CORS ---
+# =========================
+# CORS helpers
+# =========================
 def add_cors(resp):
+    """Add permissive CORS headers (handy for local/mobile clients)."""
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Device-ID"
     resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
@@ -180,12 +268,16 @@ def add_cors(resp):
 
 @app.after_request
 def apply_cors(resp):
+    """Apply CORS headers to every response."""
     return add_cors(resp)
 
-# --- Routes ---
+# =========================
+# Misc routes
+# =========================
 @app.route("/ping")
 @app.route("/api/ping")
 def ping():
+    """Lightweight liveness + YOLO status."""
     info = {"ok": True, "yolo": YOLO_OK}
     try:
         if YOLO_OK and hasattr(MODEL, 'names'):
@@ -197,10 +289,21 @@ def ping():
 
 @app.route("/")
 def root():
+    """Home page (renders templates/index.html)."""
     return render_template("index.html")
 
+# =========================
+# Detection endpoint (per frame)
+# =========================
 @app.route("/api/detect", methods=["POST", "OPTIONS"])
 def api_detect():
+    """
+    Accept a single image frame:
+    - run YOLO with ByteTrack for track IDs
+    - update in-memory tracks per device
+    - finalize + log a track only after it's missing for MAX_MISSED_FRAMES
+    - return detections for overlay (bbox/conf/cls)
+    """
     if request.method == "OPTIONS":
         return add_cors(make_response("", 204))
 
@@ -211,12 +314,13 @@ def api_detect():
         return add_cors(jsonify({"detections": [], "yolo": False}))
 
     try:
+        # Decode image to PIL
         data = file.read()
         import PIL.Image as Image
         img = Image.open(io.BytesIO(data)).convert("RGB")
         w, h = img.size
 
-        # Optional metadata
+        # Optional metadata from form/headers
         device_id = request.form.get("device_id") or request.headers.get("X-Device-ID") or "unknown"
         def _f(name):
             v = request.form.get(name)
@@ -224,22 +328,22 @@ def api_detect():
                 return float(v) if v not in (None, "") else None
             except Exception:
                 return None
-        lat = _f("lat"); lon = _f("lon"); accuracy = _f("accuracy")
+        lat = _f("lat"); lon = _f("lon")
         client_ts = request.form.get("timestamp")
-        now_dt = datetime.utcnow()
+        now_dt = datetime.utcnow()  # naive UTC is OK; we normalize when finalizing
 
-        # confidence threshold 0.5
-        # Use Ultralytics built-in tracker with persistence to obtain stable track IDs
+        # Run model with built-in tracker (ByteTrack) and persistent state
         import numpy as _np
         np_img = _np.array(img)
         results = MODEL.track(source=np_img, conf=0.5, verbose=False, persist=True, tracker='bytetrack.yaml')
-        detections = []
+        detections = []  # returned to client for overlay
 
-        # Per-device tracking
+        # Per-device track list
         dev_tracks = TRACKS.setdefault(device_id, [])
         matched_track_ids = set()
 
         def crop_bytes(bbox):
+            """Return JPEG bytes for the given XYXY bbox; fallback to original bytes on error."""
             try:
                 x1, y1, x2, y2 = map(int, bbox)
                 c = img.crop((x1, y1, x2, y2))
@@ -248,7 +352,7 @@ def api_detect():
             except Exception:
                 return data
 
-        # Collect detections for this frame (with Ultralytics track IDs)
+        # Collect current-frame detections (including tracker IDs if available)
         frame_dets = []
         for r in results:
             if r.boxes is None:
@@ -264,24 +368,30 @@ def api_detect():
                     cls_name = (MODEL.names or {}).get(cls_id, "pothole")
                 except Exception:
                     continue
+                # Clamp to image bounds
                 x1, y1, x2, y2 = xyxy
                 x1 = max(0, min(w, x1)); x2 = max(0, min(w, x2))
                 y1 = max(0, min(h, y1)); y2 = max(0, min(h, y2))
                 frame_dets.append({"bbox": [x1, y1, x2, y2], "confidence": conf, "cls": cls_name, "track_id": track_id})
 
-        # Assign by Ultralytics-provided track IDs
+        # Sort by confidence so the "best" frame tends to overwrite earlier crops
         frame_dets.sort(key=lambda d: d["confidence"], reverse=True)
+
+        # Update or create tracks by tracker ID
         for det in frame_dets:
-            # For overlay on client
+            # For overlay (doesn't include track_id on purpose)
             detections.append({k: det[k] for k in ["bbox","confidence","cls"]})
             tid = det.get("track_id")
             if tid is None:
+                # If tracker hasn't assigned an ID yet, skip track aggregation for this det
                 continue
-            # Find existing track by tid
+
+            # Look for an existing track with the same track_id
             t = next((x for x in dev_tracks if x.get("track_id") == tid), None)
             if t is None:
+                # Start a new track for this object
                 t = {
-                    "id": str(uuid.uuid4()),  # external event id we log
+                    "id": str(uuid.uuid4()),  # external event id we log once per finalized track
                     "track_id": tid,
                     "cls": det["cls"],
                     "bbox": det["bbox"],
@@ -290,20 +400,22 @@ def api_detect():
                     "missed": 0,
                     "best_conf": det["confidence"],
                     "best_img_bytes": crop_bytes(det["bbox"]),
-                    "best_lat": lat, "best_lon": lon, "best_acc": accuracy,
+                    "best_lat": lat, "best_lon": lon,
                 }
                 dev_tracks.append(t)
             else:
+                # Update existing track fresh data
                 t["bbox"] = det["bbox"]
                 t["last_dt"] = now_dt
                 t["missed"] = 0
+                # Keep the best-confidence snapshot and GPS
                 if det["confidence"] >= (t.get("best_conf") or 0):
                     t["best_conf"] = det["confidence"]
                     t["best_img_bytes"] = crop_bytes(det["bbox"])
-                    t["best_lat"], t["best_lon"], t["best_acc"] = lat, lon, accuracy
+                    t["best_lat"], t["best_lon"] = lat, lon
             matched_track_ids.add(tid)
 
-        # Age and finalize tracks not matched this frame
+        # Age tracks not matched this frame; finalize those that have been missing for too long
         still_active = []
         for t in dev_tracks:
             if t.get("track_id") in matched_track_ids:
@@ -316,53 +428,71 @@ def api_detect():
                     still_active.append(t)
         TRACKS[device_id] = still_active
 
+        # Return overlay info and image dimensions
         return add_cors(jsonify({"detections": detections, "size": [w, h], "yolo": True}))
     except Exception as e:
+        # Return error in JSON; logs/tracebacks can be added here if desired
         return add_cors(jsonify({"error": str(e)})), 500
 
+# =========================
+# Simple JSON logger (optional)
+# =========================
 @app.route("/api/log", methods=["POST", "OPTIONS"])
 def api_log():
+    """
+    Accepts a JSON payload and appends it to local CSV, mirrors to Supabase.
+    Useful for quickly validating table connectivity without running YOLO.
+    """
     if request.method == "OPTIONS":
         return add_cors(make_response("", 204))
     try:
         payload = request.get_json(force=True)
         ts = payload.get("timestamp") or datetime.utcnow().isoformat()
-        lat = payload.get("lat"); lon = payload.get("lon"); acc = payload.get("accuracy"); conf = payload.get("confidence")
+        lat = payload.get("lat"); lon = payload.get("lon"); conf = payload.get("confidence")
         out = Path("detections.csv"); new_file = not out.exists()
         with out.open("a", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             if new_file:
-                w.writerow(["timestamp", "lat", "lon", "accuracy", "confidence", "device_id", "image_url"])
+                w.writerow(["timestamp", "lat", "lon", "confidence", "device_id", "image_url"])
             device_id = request.headers.get("X-Device-ID") or request.args.get("device_id") or None
-            w.writerow([ts, lat, lon, acc, conf, device_id, None])
-        # Mirror to Supabase (no image)
+            w.writerow([ts, lat, lon, conf, device_id, None])
+        # Mirror to Supabase (fields may be NULL; table should allow it)
         supabase_insert_detection({
-            "timestamp": ts, "device_id": device_id, "lat": lat, "lon": lon, "accuracy": acc, "confidence": conf, "image_url": None,
+            "timestamp": ts, "device_id": device_id, "lat": lat, "lon": lon, "confidence": conf, "image_url": None,
         })
         return add_cors(jsonify({"logged": True}))
     except Exception as e:
         return add_cors(jsonify({"error": str(e)})), 400
 
+# =========================
+# Convenience routes
+# =========================
 @app.route("/detect.html")
 @app.route("/detect")
 def serve_detect():
+    """Demo page for detection (templates/detect.html)."""
     return render_template("detect.html")
 
 @app.route("/routes")
 @app.route("/routes.html")
 def serve_routes():
+    """Demo page that can subscribe to SSE route updates (templates/routes.html)."""
     return render_template("routes.html")
 
 @app.route("/api/detections", methods=["GET"])
 def list_detections():
+    """
+    Return the last N rows of the local CSV (debugging convenience).
+    Useful if Supabase is down or for quick inspection.
+    """
     out = Path("detections.csv")
     if not out.exists():
-        return add_cors(jsonify({"rows": [], "headers": ["timestamp", "lat", "lon", "accuracy", "confidence", "device_id", "image_url"]}))
+        return add_cors(jsonify({"rows": [], "headers": ["timestamp", "lat", "lon", "confidence", "device_id", "image_url"]}))
     limit = request.args.get('limit', default=200, type=int)
     rows = []
     with out.open("r", encoding="utf-8", newline="") as f:
         reader = csv.reader(f)
-        headers = next(reader, ["timestamp","lat","lon","accuracy","confidence","device_id","image_url"])
+        headers = next(reader, ["timestamp","lat","lon","confidence","device_id","image_url"])
         for r in reader:
             rows.append(r)
     if limit and limit > 0:
@@ -371,13 +501,18 @@ def list_detections():
 
 @app.route("/download/detections.csv", methods=["GET"])
 def download_detections():
+    """Download the local CSV (creates a header-only CSV if none exists yet)."""
     out = Path("detections.csv")
     if not out.exists():
         mem = io.StringIO(); writer = csv.writer(mem)
-        writer.writerow(["timestamp","lat","lon","accuracy","confidence","device_id","image_url"])
+        writer.writerow(["timestamp","lat","lon","confidence","device_id","image_url"])
         mem.seek(0)
         return add_cors(send_file(io.BytesIO(mem.getvalue().encode('utf-8')), as_attachment=True, download_name='detections.csv', mimetype='text/csv'))
     return add_cors(send_from_directory(directory=str(out.parent), path=out.name, as_attachment=True))
 
+# =========================
+# Dev server
+# =========================
 if __name__ == "__main__":
+    # In production use a proper WSGI/ASGI server (gunicorn/uvicorn)
     app.run(host="0.0.0.0", port=5000, debug=True)

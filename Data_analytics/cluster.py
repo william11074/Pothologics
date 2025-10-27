@@ -43,13 +43,14 @@ class PotholeRepairOptimizer:
             metric='haversine'
         ).fit(coords_rad)
         
-        self.df['cluster'] = db.labels_
+        self.labels = db.labels_
         
         # Create cluster polygons
-        for cluster_id in set(db.labels_):
+        for cluster_id in set(self.labels):
             if cluster_id == -1:
                 continue
-            cluster_points = self.df[self.df['cluster'] == cluster_id][['latitude', 'longitude']].values
+            idx = np.where(self.labels == cluster_id)[0]
+            cluster_points = self.df.iloc[idx][['latitude', 'longitude']].values
             if len(cluster_points) >= 3:
                 try:
                     poly = MultiPoint(cluster_points).convex_hull
@@ -70,11 +71,12 @@ class PotholeRepairOptimizer:
     
     def optimize_routes(self, speed_kmh=30, repair_time_mins=15):
         """Optimize repair routes and assign sequential route IDs starting at 1."""
-        unique_clusters = [cid for cid in self.df['cluster'].unique() if cid != -1]
+        unique_clusters = [int(c) for c in np.unique(self.labels) if c != -1]
         for idx, cluster_label in enumerate(sorted(unique_clusters)):
             route_id = idx + 1
 
-            cluster_points = self.df[self.df['cluster'] == cluster_label]
+            idxs = np.where(self.labels == cluster_label)[0]
+            cluster_points = self.df.iloc[idxs]
             coords = cluster_points[['latitude', 'longitude']].values
 
             # Create distance matrix
@@ -108,19 +110,6 @@ class PotholeRepairOptimizer:
 
         return self.cluster_routes, self.route_stats
     # Removed HTML visualization; this script now focuses on CSV outputs only.
-    
-    def generate_work_orders(self):
-        """Generate work orders with sequential route_id and no crew assignment."""
-        if not self.cluster_routes:
-            raise ValueError("Run optimize_routes() first")
-
-        work_orders = []
-        for route_id, route_df in self.cluster_routes.items():
-            route_df = route_df.copy()
-            route_df['route_id'] = route_id
-            work_orders.append(route_df)
-
-        return pd.concat(work_orders).sort_values(['route_id', 'route_order'])
     
     def generate_work_orders_csv(self, filename="work_orders.csv"):
         """Write work orders to CSV (sequential route IDs, no crew)."""
@@ -193,8 +182,9 @@ if __name__ == "__main__":
     optimizer = PotholeRepairOptimizer("./detections_simulated.csv")
     
     # Step 1: Cluster potholes
-    clustered_data = optimizer.cluster_potholes()
-    print(f"Found {len(clustered_data['cluster'].unique())} clusters")
+    optimizer.cluster_potholes()
+    num_clusters = len([c for c in set(getattr(optimizer, 'labels', [])) if c != -1])
+    print(f"Found {num_clusters} clusters")
     
     # Step 2: Optimize routes
     routes, stats = optimizer.optimize_routes()

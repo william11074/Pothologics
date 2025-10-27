@@ -43,7 +43,7 @@
           <div>GPS: <span id="gpsStatus" class="text-yellow-400">requesting...</span></div>
           <div>Lat: <span id="lat">-</span></div>
           <div>Lon: <span id="lon">-</span></div>
-          <div>Accuracy: <span id="acc">-</span></div>
+          
           <div>Detections: <span id="detCount">0</span></div>
           <div class="pt-2">API: <span id="apiStatus" class="text-yellow-400">checking...</span></div>
         </div>
@@ -74,7 +74,7 @@
     const gpsStatusEl = document.getElementById('gpsStatus');
     const latEl = document.getElementById('lat');
     const lonEl = document.getElementById('lon');
-    const accEl = document.getElementById('acc');
+    
     const detCountEl = document.getElementById('detCount');
     const btnStartCamera = document.getElementById('btnStartCamera');
     const btnDetect = document.getElementById('btnDetect');
@@ -148,13 +148,13 @@
 
     if ('geolocation' in navigator) {
       navigator.geolocation.watchPosition(p => {
-        const { latitude, longitude, accuracy } = p.coords;
-        lastPos = { latitude, longitude, accuracy };
+        const { latitude, longitude } = p.coords;
+        lastPos = { latitude, longitude };
         gpsStatusEl.textContent = 'ok';
         gpsStatusEl.className = 'text-emerald-400';
         latEl.textContent = latitude.toFixed(6);
         lonEl.textContent = longitude.toFixed(6);
-        accEl.textContent = `${Math.round(accuracy)} m`;
+        
       }, err => {
         gpsStatusEl.textContent = err.message || 'denied';
         gpsStatusEl.className = 'text-red-400';
@@ -187,7 +187,7 @@
         if (apiAvailable) {
           const form = new FormData(); form.append('image', blob, 'frame.jpg');
           form.append('device_id', deviceId);
-          if (lastPos) { form.append('lat', String(lastPos.latitude)); form.append('lon', String(lastPos.longitude)); form.append('accuracy', String(lastPos.accuracy ?? '')); }
+          if (lastPos) { form.append('lat', String(lastPos.latitude)); form.append('lon', String(lastPos.longitude));  }
           form.append('timestamp', new Date().toISOString());
           const resp = await fetch(API_DETECT, { method: 'POST', body: form, headers: { 'X-Device-ID': deviceId } });
           if (resp.ok) { const data = await resp.json(); detections = Array.isArray(data.detections) ? data.detections : []; }
@@ -211,7 +211,7 @@
         }
 
         if (found && lastPos) {
-          const entry = { timestamp: new Date().toISOString(), lat: lastPos.latitude, lon: lastPos.longitude, accuracy: lastPos.accuracy ?? null, confidence: detections[0]?.confidence ?? null };
+          const entry = { timestamp: new Date().toISOString(), lat: lastPos.latitude, lon: lastPos.longitude, confidence: detections[0]?.confidence ?? null };
           logs.push(entry); detCount += 1; detCountEl.textContent = String(detCount); appendRow(entry);
           // Server performs event-level logging; no per-frame /api/log here to avoid duplicates.
         }
@@ -232,8 +232,8 @@
     }
 
     btnDownload.addEventListener('click', () => {
-      const header = ['timestamp','lat','lon','accuracy','confidence'];
-      const rows = logs.map(l => [l.timestamp,l.lat,l.lon,l.accuracy ?? '',l.confidence ?? '']);
+      const header = ['timestamp','lat','lon','confidence'];
+      const rows = logs.map(l => [l.timestamp,l.lat,l.lon,l.confidence ?? '']);
       const csv = [header, ...rows].map(r => r.map(v => typeof v === 'string' ? '"' + v.replaceAll('"','""') + '"' : v).join(',')).join('\n');
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob); const a = document.createElement('a');
@@ -243,3 +243,5 @@
   </script>
 </body>
 </html>
+
+

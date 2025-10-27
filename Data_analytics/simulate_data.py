@@ -46,8 +46,8 @@ if __name__ == "__main__":
     pothole_data.to_csv('pothole_dataset.csv', index=False)
     print("Generated dataset with shape:", pothole_data.shape)
 
-    # Also generate a detections-style CSV matching server schema
-    # Columns: detection_id,device_id,cls,start_timestamp,end_timestamp,duration_s,lat,lon,accuracy,confidence_peak,image_url
+    # Also generate a detections-style CSV matching server schema (without accuracy)
+    # Columns: detection_id,device_id,cls,start_timestamp,end_timestamp,duration_s,lat,lon,confidence_peak,image_url
     device_id = 'simulator-1'
     events = []
     now = datetime.datetime.utcnow()
@@ -57,7 +57,6 @@ if __name__ == "__main__":
         start = now + datetime.timedelta(seconds=int(np.random.randint(0, 600)))
         duration = float(np.random.randint(2, 11))
         end = start + datetime.timedelta(seconds=duration)
-        acc = float(np.random.randint(5, 31))
         conf = float(np.random.uniform(0.6, 0.95))
         events.append({
             'detection_id': str(uuid.uuid4()),
@@ -68,11 +67,10 @@ if __name__ == "__main__":
             'duration_s': f"{duration:.3f}",
             'lat': float(row['latitude']),
             'lon': float(row['longitude']),
-            'accuracy': acc,
             'confidence_peak': conf,
             'image_url': ''
         })
 
-    det_df = pd.DataFrame(events, columns=['detection_id','device_id','cls','start_timestamp','end_timestamp','duration_s','lat','lon','accuracy','confidence_peak','image_url'])
+    det_df = pd.DataFrame(events, columns=['detection_id','device_id','cls','start_timestamp','end_timestamp','duration_s','lat','lon','confidence_peak','image_url'])
     det_df.to_csv('detections_simulated.csv', index=False)
     print("Generated detections_simulated.csv with", len(det_df), "rows")

@@ -1,23 +1,34 @@
 <!doctype html>
 <html lang="en">
+
 <head>
-  <meta charset="utf-8" />
-  <title>Pothole Repair Map (Embed)</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta charset="utf-8" />
+    <title>Pothole Repair Map (Embed)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-  <!-- Leaflet -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- Leaflet -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
 
-  <!-- MarkerCluster (optional but useful for many points) -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
-  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+    <!-- MarkerCluster (optional but useful for many points) -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+    <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 
-  <style>
-    html, body { height: 100%; margin: 0; }
-    #map { width: 100%; height: 100%; }
-    /* .legend {
+    <style>
+        html,
+        body {
+            height: 100%;
+            margin: 0;
+        }
+
+        #map {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* .legend {
       position: absolute; bottom: 12px; left: 12px; z-index: 1000;
       background: white; border-radius: 8px; padding: 8px 10px; box-shadow: 0 2px 8px rgba(0,0,0,.15);
       font: 12px/1.3 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
@@ -27,203 +38,287 @@
     .swatch.high { background: #d32f2f; }
     .swatch.med  { background: #f57c00; }
     .swatch.low  { background: #388e3c; } */
-  </style>
+    </style>
 </head>
+
 <body>
-  <div id="map"></div>
-  <div class="legend">
-    <div class="row"><span class="swatch high"></span> High severity</div>
-    <div class="row"><span class="swatch med"></span> Medium</div>
-    <div class="row"><span class="swatch low"></span> Low</div>
-  </div>
+    <div id="map"></div>
+    <div class="legend">
+        <div class="row"><span class="swatch high"></span> High severity</div>
+        <div class="row"><span class="swatch med"></span> Medium</div>
+        <div class="row"><span class="swatch low"></span> Low</div>
+    </div>
 
-  <script>
-    /***************
-     * Map Setup
-     ***************/
-    const map = L.map('map', { zoomControl: true }).setView([37.7749, -122.4194], 12); // default center (SF)
-    const tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 20,
-      attribution: '&copy; OpenStreetMap contributors'
-    }).addTo(map);
+    <script>
+        /***************
+         * Map Setup
+         ***************/
+        const map = L.map('map', { zoomControl: true }).setView([37.7749, -122.4194], 12); // default center (SF)
+        const tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 20,
+            attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
 
-    // Layers for dynamic content
-    const potholeCluster = L.markerClusterGroup({ disableClusteringAtZoom: 17 });
-    const potholeLayer = L.geoJSON(null, {
-      pointToLayer: (f, latlng) => L.circleMarker(latlng, styleForPothole(f)),
-      onEachFeature: (f, layer) => layer.bindPopup(popupForPothole(f))
-    });
-    potholeCluster.addLayer(potholeLayer).addTo(map);
+        // Layers for dynamic content
+        const potholeCluster = L.markerClusterGroup({ disableClusteringAtZoom: 17 });
+        const potholeLayer = L.geoJSON(null, {
+            pointToLayer: (f, latlng) => L.circleMarker(latlng, styleForPothole(f)),
+            onEachFeature: (f, layer) => layer.bindPopup(popupForPothole(f))
+        });
+        potholeCluster.addLayer(potholeLayer).addTo(map);
 
-    const routeLayer = L.geoJSON(null, {
-      style: f => ({
-        color: f?.properties?.color || '#1976d2',
-        weight: f?.properties?.weight || 5,
-        opacity: f?.properties?.opacity ?? 0.9
-      })
-    }).addTo(map);
+        const routeLayer = L.geoJSON(null, {
+            style: f => ({
+                color: f?.properties?.color || '#1976d2',
+                weight: f?.properties?.weight || 5,
+                opacity: f?.properties?.opacity ?? 0.9
+            })
+        }).addTo(map);
 
-    // Optional crew/vehicle location layer
-    const vehicleLayer = L.geoJSON(null, {
-      pointToLayer: (f, latlng) => L.circleMarker(latlng, {
-        radius: 6, color: '#222', fillColor: '#ffd54f', fillOpacity: 0.9, weight: 1
-      }).bindPopup(`Crew: ${f.properties?.name || 'N/A'}`)
-    }).addTo(map);
+        // Optional crew/vehicle location layer
+        const vehicleLayer = L.geoJSON(null, {
+            pointToLayer: (f, latlng) => L.circleMarker(latlng, {
+                radius: 6, color: '#222', fillColor: '#ffd54f', fillOpacity: 0.9, weight: 1
+            }).bindPopup(`Crew: ${f.properties?.name || 'N/A'}`)
+        }).addTo(map);
 
-    // function styleForPothole(f) {
-    //   const sev = String((f.properties?.severity ?? '')).toLowerCase();
-    //   const color =
-    //     sev === 'high'   ? '#d32f2f' :
-    //     sev === 'medium' ? '#f57c00' :
-    //     sev === 'low'    ? '#388e3c' : '#5e35b1';
-    //   return { radius: 5, color, weight: 1.5, fillColor: color, fillOpacity: 0.7 };
-    // }
+        // function styleForPothole(f) {
+        //   const sev = String((f.properties?.severity ?? '')).toLowerCase();
+        //   const color =
+        //     sev === 'high'   ? '#d32f2f' :
+        //     sev === 'medium' ? '#f57c00' :
+        //     sev === 'low'    ? '#388e3c' : '#5e35b1';
+        //   return { radius: 5, color, weight: 1.5, fillColor: color, fillOpacity: 0.7 };
+        // }
 
-    function popupForPothole(f) {
-      const p = f.properties || {};
-      return `
+        function popupForPothole(f) {
+            const p = f.properties || {};
+            return `
         <b>Pothole #${p.id ?? '—'}</b><br/>
         Severity: ${p.severity ?? '—'}<br/>
         Status: ${p.status ?? 'unknown'}<br/>
         Reported: ${p.reported_at ?? '—'}
       `;
-    }
-
-    /***************
-     * Live Update API (for parent window via postMessage)
-     *
-     * Post messages to this iframe’s contentWindow with:
-     *  - { type: 'addPotholes', features: [GeoJSON Point Features] }
-     *  - { type: 'addRoute', feature: GeoJSON LineString/MultiLineString }
-     *  - { type: 'addVehicles', features: [GeoJSON Point Features] }
-     *  - { type: 'replacePotholes', featureCollection: GeoJSON FeatureCollection }
-     *  - { type: 'replaceRoute', feature: GeoJSON LineString/MultiLineString }
-     *  - { type: 'clear', layer: 'potholes'|'routes'|'vehicles'|'all' }
-     *  - { type: 'fit', target: 'potholes'|'routes'|'vehicles'|'all', padding: 40 }
-     *  - { type: 'setView', center: [lng, lat], zoom: 13 }
-     *  - { type: 'setTiles', urlTemplate: 'https://{s}.tile...', options: {...} }
-     *  - { type: 'ping' } -> will reply with { type: 'pong' }
-     ***************/
-    window.addEventListener('message', (event) => {
-      // If you want, restrict origin: if (event.origin !== 'https://yourdomain.com') return;
-      const msg = event.data || {};
-      try {
-        switch (msg.type) {
-          case 'ping':
-            return event.source?.postMessage({ type: 'pong' }, event.origin || '*');
-
-          case 'addPotholes': {
-            const feats = asArray(msg.features).filter(isFeature);
-            feats.forEach(f => potholeLayer.addData(f));
-            break;
-          }
-
-          case 'replacePotholes': {
-            potholeLayer.clearLayers();
-            const fc = msg.featureCollection;
-            if (isFeatureCollection(fc)) potholeLayer.addData(fc);
-            break;
-          }
-
-          case 'addRoute': {
-            const ft = msg.feature;
-            if (isFeature(ft)) routeLayer.addData(ft);
-            break;
-          }
-
-          case 'replaceRoute': {
-            routeLayer.clearLayers();
-            const ft = msg.feature;
-            if (isFeature(ft)) routeLayer.addData(ft);
-            break;
-          }
-
-          case 'addVehicles': {
-            const feats = asArray(msg.features).filter(isFeature);
-            feats.forEach(f => vehicleLayer.addData(f));
-            break;
-          }
-
-          case 'clear': {
-            const layer = (msg.layer || 'all').toLowerCase();
-            if (layer === 'potholes' || layer === 'all') potholeLayer.clearLayers();
-            if (layer === 'routes'   || layer === 'all') routeLayer.clearLayers();
-            if (layer === 'vehicles' || layer === 'all') vehicleLayer.clearLayers();
-            break;
-          }
-
-          case 'fit': {
-            const target = (msg.target || 'all').toLowerCase();
-            let group = L.featureGroup([]);
-            if (target === 'potholes' || target === 'all') group.addLayer(potholeLayer);
-            if (target === 'routes'   || target === 'all') group.addLayer(routeLayer);
-            if (target === 'vehicles' || target === 'all') group.addLayer(vehicleLayer);
-            const padding = Number(msg.padding ?? 40);
-            const b = group.getBounds();
-            if (b.isValid()) map.fitBounds(b, { padding: [padding, padding] });
-            break;
-          }
-
-          case 'setView': {
-            const [lng, lat] = msg.center || [];
-            const zoom = msg.zoom ?? map.getZoom();
-            if (Number.isFinite(lng) && Number.isFinite(lat)) map.setView([lat, lng], zoom);
-            break;
-          }
-
-          case 'setTiles': {
-            if (msg.urlTemplate) {
-              map.removeLayer(tiles);
-              L.tileLayer(msg.urlTemplate, msg.options || { maxZoom: 20 }).addTo(map);
-            }
-            break;
-          }
         }
-      } catch (e) {
-        console.error('Update error:', e);
-      }
-    });
 
-    function asArray(v) { return Array.isArray(v) ? v : (v ? [v] : []); }
-    function isFeature(obj) { return obj && obj.type === 'Feature' && obj.geometry; }
-    function isFeatureCollection(obj) { return obj && obj.type === 'FeatureCollection' && Array.isArray(obj.features); }
+        /***************
+         * Live Update API (for parent window via postMessage)
+         *
+         * Post messages to this iframe’s contentWindow with:
+         *  - { type: 'addPotholes', features: [GeoJSON Point Features] }
+         *  - { type: 'addRoute', feature: GeoJSON LineString/MultiLineString }
+         *  - { type: 'addVehicles', features: [GeoJSON Point Features] }
+         *  - { type: 'replacePotholes', featureCollection: GeoJSON FeatureCollection }
+         *  - { type: 'replaceRoute', feature: GeoJSON LineString/MultiLineString }
+         *  - { type: 'clear', layer: 'potholes'|'routes'|'vehicles'|'all' }
+         *  - { type: 'fit', target: 'potholes'|'routes'|'vehicles'|'all', padding: 40 }
+         *  - { type: 'setView', center: [lng, lat], zoom: 13 }
+         *  - { type: 'setTiles', urlTemplate: 'https://{s}.tile...', options: {...} }
+         *  - { type: 'ping' } -> will reply with { type: 'pong' }
+         ***************/
+        window.addEventListener('message', (event) => {
+            // If you want, restrict origin: if (event.origin !== 'https://yourdomain.com') return;
+            const msg = event.data || {};
+            try {
+                switch (msg.type) {
+                    case 'ping':
+                        return event.source?.postMessage({ type: 'pong' }, event.origin || '*');
 
-    /***************
-     * Optional: Server-Sent Events (SSE) listener
-     * If you have a backend that streams events at /events,
-     * each message.data should be JSON like { type: 'addPotholes', ... } (same schema as postMessage).
-     * Enable by adding ?sse=1 to the iframe URL or setting window.ENABLE_SSE = true before load.
-     ***************/
-    const urlParams = new URLSearchParams(window.location.search);
-    const ENABLE_SSE = urlParams.get('sse') === '1' || window.ENABLE_SSE === true;
+                    case 'addPotholes': {
+                        const feats = asArray(msg.features).filter(isFeature);
+                        feats.forEach(f => potholeLayer.addData(f));
+                        break;
+                    }
 
-    if (ENABLE_SSE && 'EventSource' in window) {
-      try {
-        const esUrl = urlParams.get('sse_url') || '/events';
-        const es = new EventSource(esUrl);
-        es.onmessage = (ev) => {
-          try {
-            const msg = JSON.parse(ev.data);
-            window.postMessage(msg, '*'); // reuse the same handler
-          } catch (e) { console.warn('Bad SSE payload', e); }
+                    case 'replacePotholes': {
+                        potholeLayer.clearLayers();
+                        const fc = msg.featureCollection;
+                        if (isFeatureCollection(fc)) potholeLayer.addData(fc);
+                        break;
+                    }
+
+                    case 'addRoute': {
+                        const ft = msg.feature;
+                        if (isFeature(ft)) routeLayer.addData(ft);
+                        break;
+                    }
+
+                    case 'replaceRoute': {
+                        routeLayer.clearLayers();
+                        const ft = msg.feature;
+                        if (isFeature(ft)) routeLayer.addData(ft);
+                        break;
+                    }
+
+                    case 'addVehicles': {
+                        const feats = asArray(msg.features).filter(isFeature);
+                        feats.forEach(f => vehicleLayer.addData(f));
+                        break;
+                    }
+
+                    case 'clear': {
+                        const layer = (msg.layer || 'all').toLowerCase();
+                        if (layer === 'potholes' || layer === 'all') potholeLayer.clearLayers();
+                        if (layer === 'routes' || layer === 'all') routeLayer.clearLayers();
+                        if (layer === 'vehicles' || layer === 'all') vehicleLayer.clearLayers();
+                        break;
+                    }
+
+                    case 'fit': {
+                        const target = (msg.target || 'all').toLowerCase();
+                        let group = L.featureGroup([]);
+                        if (target === 'potholes' || target === 'all') group.addLayer(potholeLayer);
+                        if (target === 'routes' || target === 'all') group.addLayer(routeLayer);
+                        if (target === 'vehicles' || target === 'all') group.addLayer(vehicleLayer);
+                        const padding = Number(msg.padding ?? 40);
+                        const b = group.getBounds();
+                        if (b.isValid()) map.fitBounds(b, { padding: [padding, padding] });
+                        break;
+                    }
+
+                    case 'setView': {
+                        const [lng, lat] = msg.center || [];
+                        const zoom = msg.zoom ?? map.getZoom();
+                        if (Number.isFinite(lng) && Number.isFinite(lat)) map.setView([lat, lng], zoom);
+                        break;
+                    }
+
+                    case 'setTiles': {
+                        if (msg.urlTemplate) {
+                            map.removeLayer(tiles);
+                            L.tileLayer(msg.urlTemplate, msg.options || { maxZoom: 20 }).addTo(map);
+                        }
+                        break;
+                    }
+                }
+            } catch (e) {
+                console.error('Update error:', e);
+            }
+        });
+
+        function asArray(v) { return Array.isArray(v) ? v : (v ? [v] : []); }
+        function isFeature(obj) { return obj && obj.type === 'Feature' && obj.geometry; }
+        function isFeatureCollection(obj) { return obj && obj.type === 'FeatureCollection' && Array.isArray(obj.features); }
+
+        /***************
+         * Optional: Server-Sent Events (SSE) listener
+         * If you have a backend that streams events at /events,
+         * each message.data should be JSON like { type: 'addPotholes', ... } (same schema as postMessage).
+         * Enable by adding ?sse=1 to the iframe URL or setting window.ENABLE_SSE = true before load.
+         ***************/
+        const urlParams = new URLSearchParams(window.location.search);
+        const ENABLE_SSE = urlParams.get('sse') === '1' || window.ENABLE_SSE === true;
+
+        if (ENABLE_SSE && 'EventSource' in window) {
+            try {
+                const esUrl = urlParams.get('sse_url') || '/events';
+                const es = new EventSource(esUrl);
+                es.onmessage = (ev) => {
+                    try {
+                        const msg = JSON.parse(ev.data);
+                        window.postMessage(msg, '*'); // reuse the same handler
+                        // If server announces new routes, fetch and update
+                        if (msg.type === 'routesUpdated' && msg.url) {
+                            fetch(msg.url, { cache: 'no-store' })
+                                .then(r => r.text())
+                                .then(csv => {
+                                    // Expecting CSV with columns: route_id, latitude, longitude, route_order (at minimum)
+                                    const rows = csv.split(/\r?\n/);
+                                    const header = (rows.shift() || '').split(',').map(h => h.trim());
+                                    const idx = {
+                                        route_id: header.findIndex(h => h.toLowerCase() === 'route_id'),
+                                        lat: header.findIndex(h => h.toLowerCase() === 'latitude' || h.toLowerCase() === 'lat'),
+                                        lon: header.findIndex(h => h.toLowerCase() === 'longitude' || h.toLowerCase() === 'lon'),
+                                        order: header.findIndex(h => h.toLowerCase() === 'route_order' || h.toLowerCase() === 'order')
+                                    };
+                                    const data = rows.filter(Boolean).map(line => {
+                                        const parts = line.split(',');
+                                        return {
+                                            route_id: parts[idx.route_id],
+                                            latitude: parseFloat(parts[idx.lat]),
+                                            longitude: parseFloat(parts[idx.lon]),
+                                            route_order: parseInt(parts[idx.order] || '0', 10)
+                                        };
+                                    }).filter(r => Number.isFinite(r.latitude) && Number.isFinite(r.longitude));
+
+                                    // Clear and redraw route layer
+                                    routeLayer.clearLayers();
+                                    const grouped = {};
+                                    data.forEach(r => {
+                                        grouped[r.route_id] ||= [];
+                                        grouped[r.route_id].push(r);
+                                    });
+                                    Object.keys(grouped).sort((a, b) => Number(a) - Number(b)).forEach((rid, i) => {
+                                        const pts = grouped[rid].sort((a, b) => a.route_order - b.route_order);
+                                        const latlngs = pts.map(p => [p.latitude, p.longitude]);
+                                        if (latlngs.length) {
+                                            L.polyline(latlngs, { color: ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'][i % 4], weight: 4, opacity: 0.9 }).addTo(routeLayer);
+                                        }
+                                    });
+
+                                    const b = routeLayer.getBounds();
+                                    if (b.isValid()) map.fitBounds(b, { padding: [20, 20] });
+                                })
+                                .catch(err => console.warn('Failed to refresh routes:', err));
+                        }
+                    } catch (e) { console.warn('Bad SSE payload', e); }
+                };
+                es.onerror = (err) => console.warn('SSE error', err);
+            } catch (e) {
+                console.warn('SSE setup failed', e);
+            }
+        }
+
+        // Expose a minimal debug API (optional)
+        window.debugAddRandom = function () {
+            const center = map.getCenter();
+            const jitter = () => (Math.random() - 0.5) * 0.01;
+            const f = {
+                type: 'Feature',
+                geometry: { type: 'Point', coordinates: [center.lng + jitter(), center.lat + jitter()] },
+                properties: { id: Math.floor(Math.random() * 1e6), severity: ['low', 'medium', 'high'][Math.floor(Math.random() * 3)], status: 'new' }
+            };
+            potholeLayer.addData(f);
         };
-        es.onerror = (err) => console.warn('SSE error', err);
-      } catch (e) {
-        console.warn('SSE setup failed', e);
-      }
-    }
 
-    // Expose a minimal debug API (optional)
-    window.debugAddRandom = function () {
-      const center = map.getCenter();
-      const jitter = () => (Math.random() - 0.5) * 0.01;
-      const f = {
-        type: 'Feature',
-        geometry: { type: 'Point', coordinates: [center.lng + jitter(), center.lat + jitter()] },
-        properties: { id: Math.floor(Math.random()*1e6), severity: ['low','medium','high'][Math.floor(Math.random()*3)], status: 'new' }
-      };
-      potholeLayer.addData(f);
-    };
-  </script>
+        const CSV_URL = './detections_simulated.csv';   // path to your CSV file
+        const LAT_FIELD = 'lat';
+        const LON_FIELD = 'lon';
+        // Extra columns to show extra information
+        // const EXTRA_FIELDS = ['id', 'severity', 'status', 'reported_at'];
+
+        function csvRowsToFeatureCollection(rows) {
+            const feats = [];
+            for (const row of rows) {
+                const lat = parseFloat(row[LAT_FIELD]);
+                const lon = parseFloat(row[LON_FIELD]);
+                if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+                feats.push({
+                    type: 'Feature',
+                    geometry: { type: 'Point', coordinates: [lon, lat] },
+                    properties: Object.fromEntries(
+                        Object.entries(row).filter(([k, v]) => v !== '' && v != null && (k === LAT_FIELD || k === LON_FIELD || EXTRA_FIELDS.includes(k)))
+                    )
+                });
+            }
+            return { type: 'FeatureCollection', features: feats };
+        }
+
+        // Load CSV and add to map
+        fetch(CSV_URL)
+            .then(r => r.text())
+            .then(text => new Promise(res => Papa.parse(text, { header: true, skipEmptyLines: true, complete: res })))
+            .then(result => {
+                const fc = csvRowsToFeatureCollection(result.data);
+                potholeLayer.clearLayers();
+                potholeLayer.addData(fc);
+
+                // Fit to data
+                const b = potholeCluster.getBounds();
+                if (b.isValid()) map.fitBounds(b, { padding: [20, 20] });
+            })
+            .catch(err => console.error('Failed to load potholes CSV:', err));
+    </script>
 </body>
+
 </html>
