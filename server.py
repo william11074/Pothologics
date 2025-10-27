@@ -479,6 +479,22 @@ def serve_routes():
     """Demo page that can subscribe to SSE route updates (templates/routes.html)."""
     return render_template("routes.html")
 
+@app.route("/work_orders.csv", methods=["GET"])
+def serve_work_orders_csv():
+    """Serve work_orders.csv from the project root if it exists."""
+    out = Path("work_orders.csv")
+    if not out.exists():
+        return add_cors(jsonify({"error": "work_orders.csv not found"})), 404
+    return add_cors(send_from_directory(directory=str(out.parent), path=out.name, as_attachment=False))
+
+@app.route("/detections_simulated.csv", methods=["GET"])
+def serve_detections_simulated_csv():
+    """Serve detections_simulated.csv from the project root if it exists."""
+    out = Path("detections_simulated.csv")
+    if not out.exists():
+        return add_cors(jsonify({"error": "detections_simulated.csv not found"})), 404
+    return add_cors(send_from_directory(directory=str(out.parent), path=out.name, as_attachment=False))
+
 @app.route("/api/detections", methods=["GET"])
 def list_detections():
     """
