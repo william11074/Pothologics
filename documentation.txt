@@ -4,5 +4,5 @@ Commands
 pipreqs . [--force]
 
 
-Note
+Note:
 AI assistance was used to create frontend design
