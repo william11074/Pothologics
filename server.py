@@ -206,6 +206,12 @@ def _finalize_track(device_id: str, t: dict):
         "image_url": image_url,
     })
 
+    # Kick off a background recluster + route rebuild (debounced)
+    try:
+        schedule_recluster()
+    except Exception:
+        pass
+
 # =========================
 # Health check for Supabase
 # =========================
@@ -257,6 +263,78 @@ def supabase_status():
     return add_cors(jsonify(info))
 
 # =========================
+# Background recluster pipeline
+# =========================
+_recluster_lock = threading.Lock()
+_recluster_pending = False
+
+def _import_optimizer():
+    try:
+        # Try package-style import first
+        from Data_analytics.cluster import PotholeRepairOptimizer  # type: ignore
+        return PotholeRepairOptimizer
+    except Exception:
+        try:
+            import sys as _sys
+            p = Path("Data_analytics").resolve()
+            if str(p) not in _sys.path:
+                _sys.path.insert(0, str(p))
+            from cluster import PotholeRepairOptimizer  # type: ignore
+            return PotholeRepairOptimizer
+        except Exception:
+            return None
+
+def _run_recluster(input_csv: str = "detections.csv") -> bool:
+    Optimizer = _import_optimizer()
+    if Optimizer is None:
+        return False
+    try:
+        opt = Optimizer(input_csv)
+        opt.cluster_potholes()
+        opt.optimize_routes()
+        opt.generate_work_orders_csv('work_orders.csv')
+        opt.generate_route_summary_csv('route_summary.csv')
+        # Notify clients via SSE
+        broadcast_routes_update({
+            'type': 'routesUpdated',
+            'url': '/work_orders.csv',
+            'ts': datetime.utcnow().isoformat() + 'Z'
+        })
+        return True
+    except Exception:
+        return False
+
+def schedule_recluster(delay_s: float = 1.0):
+    """Debounce recluster job so rapid inserts coalesce into one run."""
+    global _recluster_pending
+    with _recluster_lock:
+        if _recluster_pending:
+            return
+        _recluster_pending = True
+
+    def worker():
+        import time as _time
+        try:
+            _time.sleep(max(0.1, float(delay_s)))
+            _run_recluster("detections.csv")
+        finally:
+            global _recluster_pending
+            with _recluster_lock:
+                _recluster_pending = False
+
+    threading.Thread(target=worker, daemon=True).start()
+
+@app.route('/api/recluster', methods=['POST','OPTIONS'])
+def api_recluster():
+    if request.method == 'OPTIONS':
+        return add_cors(make_response("", 204))
+    try:
+        schedule_recluster(delay_s=0.1)
+        return add_cors(jsonify({ 'scheduled': True }))
+    except Exception as e:
+        return add_cors(jsonify({ 'error': str(e) })), 400
+
+# =========================
 # CORS helpers
 # =========================
 def add_cors(resp):
@@ -286,6 +364,67 @@ def ping():
     except Exception:
         pass
     return add_cors(jsonify(info))
+
+# =========================
+# Route color persistence
+# =========================
+ROUTE_COLORS_PATH = Path("route_colors.json")
+
+def _load_route_colors() -> dict[str, str]:
+    try:
+        if ROUTE_COLORS_PATH.exists():
+            with ROUTE_COLORS_PATH.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+                # normalize keys to strings
+                return {str(k): str(v) for k, v in data.items()}
+    except Exception:
+        pass
+    return {}
+
+def _save_route_colors(colors: dict[str, str]) -> None:
+    try:
+        tmp = ROUTE_COLORS_PATH.with_suffix(".json.tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(colors, f, ensure_ascii=False, indent=2)
+        tmp.replace(ROUTE_COLORS_PATH)
+    except Exception:
+        pass
+
+def _valid_hex_color(value: str) -> bool:
+    if not isinstance(value, str):
+        return False
+    if len(value) != 7 or not value.startswith('#'):
+        return False
+    try:
+        int(value[1:], 16)
+        return True
+    except Exception:
+        return False
+
+@app.route('/api/routes/colors', methods=['GET'])
+def get_route_colors():
+    colors = _load_route_colors()
+    return add_cors(jsonify({ 'colors': colors }))
+
+@app.route('/api/routes/colors', methods=['POST','OPTIONS'])
+def set_route_color():
+    if request.method == 'OPTIONS':
+        return add_cors(make_response("", 204))
+    try:
+        payload = request.get_json(force=True) or {}
+        rid = payload.get('route_id')
+        color = payload.get('color')
+        if rid is None or color is None:
+            return add_cors(jsonify({ 'error': 'route_id and color required' })), 400
+        rid_str = str(rid)
+        if not _valid_hex_color(color):
+            return add_cors(jsonify({ 'error': 'invalid color format, expected #RRGGBB' })), 400
+        colors = _load_route_colors()
+        colors[rid_str] = color
+        _save_route_colors(colors)
+        return add_cors(jsonify({ 'ok': True, 'route_id': rid_str, 'color': color }))
+    except Exception as e:
+        return add_cors(jsonify({ 'error': str(e) })), 400
 
 @app.route("/")
 def root():
@@ -478,6 +617,12 @@ def serve_detect():
 def serve_routes():
     """Demo page that can subscribe to SSE route updates (templates/routes.html)."""
     return render_template("routes.html")
+
+@app.route("/map")
+@app.route("/map.html")
+def serve_map():
+    """Lightweight embedded map view (templates/map.html)."""
+    return render_template("map.html")
 
 @app.route("/work_orders.csv", methods=["GET"])
 def serve_work_orders_csv():

@@ -1,5 +1,7 @@
 import pandas as pd
 import numpy as np
+import json
+from pathlib import Path
 from sklearn.cluster import DBSCAN
 from scipy.spatial.distance import cdist
 from shapely.geometry import MultiPoint
@@ -82,15 +84,27 @@ class PotholeRepairOptimizer:
             # Create distance matrix
             dist_matrix = cdist(coords, coords, lambda u, v: self.haversine_distance(u, v))
 
-            # Solve TSP with greedy approach
-            route = [0]  # Start with first point
-            unvisited = set(range(1, len(coords)))
-
-            while unvisited:
-                last = route[-1]
-                next_point = min(unvisited, key=lambda x: dist_matrix[last][x])
-                route.append(next_point)
-                unvisited.remove(next_point)
+            n = len(coords)
+            # Solve TSP: brute force for small n, otherwise greedy
+            if n < 10:
+                from itertools import permutations
+                best_order = None
+                best_len = float('inf')
+                for perm in permutations(range(1, n)):
+                    candidate = [0] + list(perm)
+                    length = sum(dist_matrix[candidate[i]][candidate[i+1]] for i in range(n-1))
+                    if length < best_len:
+                        best_len = length
+                        best_order = candidate
+                route = best_order if best_order is not None else list(range(n))
+            else:
+                route = [0]  # Start with first point
+                unvisited = set(range(1, n))
+                while unvisited:
+                    last = route[-1]
+                    next_point = min(unvisited, key=lambda x: dist_matrix[last][x])
+                    route.append(next_point)
+                    unvisited.remove(next_point)
 
             # Store ordered route
             self.cluster_routes[route_id] = cluster_points.iloc[route].copy()
@@ -116,10 +130,22 @@ class PotholeRepairOptimizer:
         if not self.cluster_routes:
             raise ValueError("Run optimize_routes() first")
 
+        # Load persisted route colors if present
+        colors_map = {}
+        try:
+            colors_path = Path('route_colors.json')
+            if colors_path.exists():
+                with colors_path.open('r', encoding='utf-8') as f:
+                    colors_map = {str(k): str(v) for k, v in json.load(f).items()}
+        except Exception:
+            colors_map = {}
+
         work_orders = []
         for route_id, route_df in self.cluster_routes.items():
             route_df = route_df.copy()
             route_df['route_id'] = route_id
+            # Attach route color if available
+            route_df['route_color'] = colors_map.get(str(route_id), None)
 
             stats = self.route_stats.get(route_id, {})
             route_df['total_km'] = stats.get('total_km')
@@ -132,7 +158,7 @@ class PotholeRepairOptimizer:
         work_orders = work_orders.sort_values(['route_id', 'route_order'])
 
         preferred_cols = [
-            'route_id', 'route_order',
+            'route_id', 'route_order', 'route_color',
             'latitude', 'longitude', 'report_date',
             'total_km', 'total_time_mins', 'repair_time_mins'
         ]

@@ -8,96 +8,12 @@
 
     <!-- Leaflet -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js">
-        async function loadRoutesFromCsv(url) {
-            try {
-                const resp = await fetch(url, { cache: 'no-store' });
-                if (!resp.ok) throw new Error('Fetch failed');
-                const csv = await resp.text();
-                const rows = csv.split(/\r?\n/);
-                const header = (rows.shift() || '').split(',').map(h => h.trim());
-                const idx = {
-                    route_id: header.findIndex(h => h.toLowerCase() === 'route_id'),
-                    lat: header.findIndex(h => h.toLowerCase() === 'latitude' || h.toLowerCase() === 'lat'),
-                    lon: header.findIndex(h => h.toLowerCase() === 'longitude' || h.toLowerCase() === 'lon'),
-                    order: header.findIndex(h => h.toLowerCase() === 'route_order' || h.toLowerCase() === 'order')
-                };
-                const data = rows.filter(Boolean).map(line => {
-                    const parts = line.split(',');
-                    return {
-                        route_id: parts[idx.route_id],
-                        latitude: parseFloat(parts[idx.lat]),
-                        longitude: parseFloat(parts[idx.lon]),
-                        route_order: parseInt(parts[idx.order] || '0', 10)
-                    };
-                }).filter(r => Number.isFinite(r.latitude) && Number.isFinite(r.longitude));
-
-                routeLayer.clearLayers();
-                const grouped = {};
-                data.forEach(r => { (grouped[r.route_id] ||= []).push(r); });
-                Object.keys(grouped).sort((a, b) => Number(a) - Number(b)).forEach((rid, i) => {
-                    const pts = grouped[rid].sort((a, b) => a.route_order - b.route_order);
-                    const latlngs = pts.map(p => [p.latitude, p.longitude]);
-                    if (latlngs.length) {
-                        L.polyline(latlngs, { color: ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'][i % 4], weight: 4, opacity: 0.9 }).addTo(routeLayer);
-                    }
-                });
-                const b = routeLayer.getBounds();
-                if (b.isValid()) map.fitBounds(b, { padding: [20, 20] });
-            } catch (e) {
-                console.warn('Failed to load CSV', url, e);
-            }
-        }
-
-        (function initCsvLoad() {
-            const url = new URLSearchParams(window.location.search).get('csv') || '/work_orders.csv';
-            loadRoutesFromCsv(url);
-        })();</script>
-    <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js">
-        async function loadRoutesFromCsv(url) {
-            try {
-                const resp = await fetch(url, { cache: 'no-store' });
-                if (!resp.ok) throw new Error('Fetch failed');
-                const csv = await resp.text();
-                const rows = csv.split(/\r?\n/);
-                const header = (rows.shift() || '').split(',').map(h => h.trim());
-                const idx = {
-                    route_id: header.findIndex(h => h.toLowerCase() === 'route_id'),
-                    lat: header.findIndex(h => h.toLowerCase() === 'latitude' || h.toLowerCase() === 'lat'),
-                    lon: header.findIndex(h => h.toLowerCase() === 'longitude' || h.toLowerCase() === 'lon'),
-                    order: header.findIndex(h => h.toLowerCase() === 'route_order' || h.toLowerCase() === 'order')
-                };
-                const data = rows.filter(Boolean).map(line => {
-                    const parts = line.split(',');
-                    return {
-                        route_id: parts[idx.route_id],
-                        latitude: parseFloat(parts[idx.lat]),
-                        longitude: parseFloat(parts[idx.lon]),
-                        route_order: parseInt(parts[idx.order] || '0', 10)
-                    };
-                }).filter(r => Number.isFinite(r.latitude) && Number.isFinite(r.longitude));
-
-                routeLayer.clearLayers();
-                const grouped = {};
-                data.forEach(r => { (grouped[r.route_id] ||= []).push(r); });
-                Object.keys(grouped).sort((a, b) => Number(a) - Number(b)).forEach((rid, i) => {
-                    const pts = grouped[rid].sort((a, b) => a.route_order - b.route_order);
-                    const latlngs = pts.map(p => [p.latitude, p.longitude]);
-                    if (latlngs.length) {
-                        L.polyline(latlngs, { color: ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'][i % 4], weight: 4, opacity: 0.9 }).addTo(routeLayer);
-                    }
-                });
-                const b = routeLayer.getBounds();
-                if (b.isValid()) map.fitBounds(b, { padding: [20, 20] });
-            } catch (e) {
-                console.warn('Failed to load CSV', url, e);
-            }
-        }
-
-        (function initCsvLoad() {
-            const url = new URLSearchParams(window.location.search).get('csv') || '/work_orders.csv';
-            loadRoutesFromCsv(url);
-        })();</script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+    <!-- MarkerCluster (optional; used by potholeCluster) -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+    <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 
     <!-- MarkerCluster (optional but useful for many points) -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
@@ -160,16 +76,11 @@
             height: 100%;
         }
 
-        /* .legend {
-      position: absolute; bottom: 12px; left: 12px; z-index: 1000;
-      background: white; border-radius: 8px; padding: 8px 10px; box-shadow: 0 2px 8px rgba(0,0,0,.15);
-      font: 12px/1.3 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
-    }
-    .legend .row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
-    .swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
-    .swatch.high { background: #d32f2f; }
-    .swatch.med  { background: #f57c00; }
-    .swatch.low  { background: #388e3c; } */
+        .legend .row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+        .swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+        .swatch.high { background: #d32f2f; }
+        .swatch.med  { background: #f57c00; }
+        .swatch.low  { background: #388e3c; }
     </style>
 </head>
 
@@ -192,7 +103,15 @@
         }).addTo(map);
 
         // Layers for dynamic content
-        const potholeCluster = L.markerClusterGroup({ disableClusteringAtZoom: 17 });
+        const potholeCluster = (L.markerClusterGroup ? L.markerClusterGroup({ disableClusteringAtZoom: 17 }) : L.layerGroup());
+        function styleForPothole(f) {
+            const sev = String((f.properties?.severity ?? '')).toLowerCase();
+            const color =
+                sev === 'high' ? '#d32f2f' :
+                sev === 'medium' ? '#f57c00' :
+                sev === 'low' ? '#388e3c' : '#5e35b1';
+            return { radius: 5, color, weight: 1.5, fillColor: color, fillOpacity: 0.7 };
+        }
         const potholeLayer = L.geoJSON(null, {
             pointToLayer: (f, latlng) => L.circleMarker(latlng, styleForPothole(f)),
             onEachFeature: (f, layer) => layer.bindPopup(popupForPothole(f))
@@ -214,14 +133,7 @@
             }).bindPopup(`Crew: ${f.properties?.name || 'N/A'}`)
         }).addTo(map);
 
-        // function styleForPothole(f) {
-        //   const sev = String((f.properties?.severity ?? '')).toLowerCase();
-        //   const color =
-        //     sev === 'high'   ? '#d32f2f' :
-        //     sev === 'medium' ? '#f57c00' :
-        //     sev === 'low'    ? '#388e3c' : '#5e35b1';
-        //   return { radius: 5, color, weight: 1.5, fillColor: color, fillOpacity: 0.7 };
-        // }
+        // (styleForPothole defined above)
 
         function popupForPothole(f) {
             const p = f.properties || {};
@@ -237,7 +149,7 @@
          * Live Update API (for parent window via postMessage)
          *
          * Post messages to this iframe’s contentWindow with:
-         *  - { type: 'addPotholes', features: [GeoJSON Point Features] }
+        *  - { type: 'addPotholes', features: [GeoJSON Point Features] }
          *  - { type: 'addRoute', feature: GeoJSON LineString/MultiLineString }
          *  - { type: 'addVehicles', features: [GeoJSON Point Features] }
          *  - { type: 'replacePotholes', featureCollection: GeoJSON FeatureCollection }
@@ -417,7 +329,7 @@
         const LAT_FIELD = 'lat';
         const LON_FIELD = 'lon';
         // Extra columns to show extra information
-        // const EXTRA_FIELDS = ['id', 'severity', 'status', 'reported_at'];
+        const EXTRA_FIELDS = ['id', 'severity', 'status', 'reported_at'];
 
         function csvRowsToFeatureCollection(rows) {
             const feats = [];
