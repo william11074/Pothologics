@@ -1,1 +1,8 @@
 cd directory then run pipreqs . to generate requirements.txt
+
+Commands
+pipreqs . [--force]
+
+
+Note
+AI assistance was used to create frontend design

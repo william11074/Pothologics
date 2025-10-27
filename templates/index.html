@@ -24,7 +24,7 @@
             }
         }
     </script>
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 
 <body class="bg-dark">
@@ -184,7 +184,7 @@
                     </div>
                 </div>
 
-                <a href="./map/merge.html"
+                <a href="./routes"
                     class="block w-full bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white py-3.5 rounded-xl font-medium transition-all duration-300 transform hover:scale-[1.02] text-center">
                     View Work Orders and More
                 </a>
