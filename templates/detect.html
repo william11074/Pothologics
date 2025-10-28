@@ -92,9 +92,10 @@
 
     let stream = null;
     let detecting = false;
-    let rafId = null;
+    let rafId = null; // timeout id for throttled capture
     let apiAvailable = false;
-    let lastPos = null;
+    let lastPos = null;        // smoothed, quality-filtered position
+    let _emaPos = null;        // internal EMA state
     let detCount = 0;
     const logs = [];
 
@@ -109,7 +110,15 @@
     }
 
     async function startCamera() {
-      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+      const constraints = {
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
+        audio: false
+      };
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
       video.srcObject = stream;
       await new Promise(r => video.onloadedmetadata = r);
       overlay.width = video.videoWidth || 1280;
@@ -146,15 +155,32 @@
     }
     pingApi();
 
+    // GPS quality config
+    const MAX_HDOP_METERS = 30;   // drop points with accuracy worse (larger) than this
+    const EMA_ALPHA = 0.2;        // smoothing factor for positions
+
+    function _smoothPos(lat, lon) {
+      if (!_emaPos) { _emaPos = { lat, lon }; return _emaPos; }
+      _emaPos.lat = EMA_ALPHA * lat + (1 - EMA_ALPHA) * _emaPos.lat;
+      _emaPos.lon = EMA_ALPHA * lon + (1 - EMA_ALPHA) * _emaPos.lon;
+      return _emaPos;
+    }
+
     if ('geolocation' in navigator) {
       navigator.geolocation.watchPosition(p => {
-        const { latitude, longitude } = p.coords;
-        lastPos = { latitude, longitude };
-        gpsStatusEl.textContent = 'ok';
+        const { latitude, longitude, accuracy } = p.coords;
+        // Treat accuracy (meters) as HDOP proxy; discard if poor
+        if (typeof accuracy === 'number' && accuracy > MAX_HDOP_METERS) {
+          gpsStatusEl.textContent = `low accuracy (${Math.round(accuracy)}m)`;
+          gpsStatusEl.className = 'text-yellow-400';
+          return;
+        }
+        const sm = _smoothPos(latitude, longitude);
+        lastPos = { latitude: sm.lat, longitude: sm.lon };
+        gpsStatusEl.textContent = accuracy ? `ok (~${Math.round(accuracy)}m)` : 'ok';
         gpsStatusEl.className = 'text-emerald-400';
-        latEl.textContent = latitude.toFixed(6);
-        lonEl.textContent = longitude.toFixed(6);
-        
+        latEl.textContent = sm.lat.toFixed(6);
+        lonEl.textContent = sm.lon.toFixed(6);
       }, err => {
         gpsStatusEl.textContent = err.message || 'denied';
         gpsStatusEl.className = 'text-red-400';
@@ -171,9 +197,22 @@
         startCamera().catch(e => statusEl.textContent = 'Camera error: ' + e.message);
       }
     });
-    btnDetect.addEventListener('click', () => { if (stream) { detecting = true; statusEl.textContent = 'Detecting...'; btnDetect.disabled = true; detectLoop(); } });
+    btnDetect.addEventListener('click', () => {
+      if (!stream) return;
+      detecting = !detecting;
+      if (detecting) {
+        statusEl.textContent = 'Detecting...';
+        btnDetect.innerHTML = '<i class="fa-solid fa-stop mr-2"></i> Stop Detection';
+        detectLoop();
+      } else {
+        statusEl.textContent = 'Detection paused';
+        btnDetect.innerHTML = '<i class="fa-solid fa-bullseye mr-2"></i> Start Detection';
+        if (rafId) { clearTimeout(rafId); rafId = null; }
+      }
+    });
     // Removed separate Stop button; camera toggle handles stopping camera and detection
 
+    const TARGET_FPS = 5; // throttle capture
     async function detectLoop() {
       if (!detecting) return;
       try {
@@ -216,12 +255,13 @@
           // Server performs event-level logging; no per-frame /api/log here to avoid duplicates.
         }
 
-        await new Promise(r => setTimeout(r, 500));
+        // Throttle to target FPS
+        await new Promise(r => setTimeout(r, Math.max(0, Math.floor(1000 / TARGET_FPS))));
       } catch (e) {
         statusEl.textContent = 'Detection error: ' + e.message;
         console.error(e);
       } finally {
-        if (detecting) rafId = requestAnimationFrame(detectLoop);
+        if (detecting) rafId = setTimeout(detectLoop, 0);
       }
     }
 
@@ -243,5 +283,4 @@
   </script>
 </body>
 </html>
-
 

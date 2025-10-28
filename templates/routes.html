@@ -32,7 +32,17 @@
       <!-- Controls -->
       <div class="lg:col-span-1 bg-slate-900/60 border border-slate-800 rounded-xl p-4 space-y-4">
         <div class="space-y-2">
-          <div id="status" class="text-sm text-gray-400">Loading routes…</div>
+          <div class="flex items-center justify-between gap-2">
+            <div id="status" class="text-sm text-gray-300 flex items-center gap-2">
+              <span id="spinner" class="hidden w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></span>
+              <span id="statusText">Loading routes…</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span id="sseDot" class="inline-block w-2.5 h-2.5 rounded-full bg-yellow-400" title="Live updates"></span>
+              <button id="btnReload" class="text-xs px-2 py-1 rounded bg-slate-800 hover:bg-slate-700">Reload</button>
+            </div>
+          </div>
+          <div id="toasts" class="fixed top-20 left-1/2 -translate-x-1/2 z-[1000] space-y-2"></div>
         </div>
 
         <div class="border-t border-slate-800 pt-3">
@@ -43,13 +53,16 @@
           </select>
           <div class="mt-3 flex items-center gap-2">
             <input id="chkDetections" type="checkbox" checked class="accent-blue-500">
-            <label for="chkDetections" class="text-gray-300 text-sm">Show detections (simulated)</label>
+            <label for="chkDetections" class="text-gray-300 text-sm">Show detections</label>
           </div>
           <!-- Per-route color controls are rendered in the legend for each route -->
         </div>
 
         <div class="border-t border-slate-800 pt-3">
           <h2 class="text-white font-semibold mb-2">Legend</h2>
+          <div class="mb-2 flex items-center justify-end">
+            <button id="btnResetAllColors" class="text-xs px-2 py-1 rounded bg-slate-800 hover:bg-slate-700">Reset All Colors</button>
+          </div>
           <div id="legend" class="space-y-1 text-sm text-gray-300 max-h-64 overflow-y-auto"></div>
         </div>
       </div>
@@ -63,6 +76,11 @@
 
   <script>
     const statusEl = document.getElementById('status');
+    const statusText = document.getElementById('statusText');
+    const spinnerEl = document.getElementById('spinner');
+    const btnReload = document.getElementById('btnReload');
+    const sseDot = document.getElementById('sseDot');
+    const toasts = document.getElementById('toasts');
     const routeFilter = document.getElementById('routeFilter');
     const legend = document.getElementById('legend');
     const chkDetections = document.getElementById('chkDetections');
@@ -106,6 +124,17 @@
     }
     map.on('zoomend', updateDetectionMarkerSizes);
 
+    function showToast(message, type='info') {
+      const el = document.createElement('div');
+      const colors = type === 'success' ? 'bg-emerald-600' : type === 'error' ? 'bg-rose-600' : 'bg-slate-700';
+      el.className = `${colors} text-white px-3 py-2 rounded shadow`;
+      el.textContent = message;
+      toasts.appendChild(el);
+      setTimeout(() => { el.remove(); }, 3000);
+    }
+
+    function setSpinner(on) { spinnerEl.classList.toggle('hidden', !on); }
+
     function buildFilters(data) {
       const routes = Array.from(new Set(data.map(r => r.route_id))).sort((a, b) => a - b);
       routeFilter.innerHTML = '<option value="">All</option>' + routes.map(r => `<option value="${r}">${r}</option>`).join('');
@@ -132,7 +161,10 @@
             <span class="inline-block w-3 h-3 mr-2 rounded align-middle" style="background:${color}"></span>
             <span class="text-gray-200 align-middle">Route ${routeId} • ${km} km • ${mins} mins</span>
           </span>
-          <input type="color" value="${color}" data-color-for="${routeId}" class="w-8 h-6 p-0 border border-slate-700 rounded bg-slate-800" />
+          <div class="flex items-center gap-1">
+            <input type="color" value="${color}" data-color-for="${routeId}" class="w-8 h-6 p-0 border border-slate-700 rounded bg-slate-800" />
+            <button class="text-xs px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700" data-reset-for="${routeId}">Reset</button>
+          </div>
         `;
         // click on label opens details
         row.querySelector('[data-route]')?.addEventListener('click', () => { renderRouteDetails(routeId); fitRoute(routeId); });
@@ -154,6 +186,20 @@
           }).catch(()=>{});
           // refresh color chip
           renderLegendSummary();
+        });
+        // per-route reset
+        row.querySelector('[data-reset-for]')?.addEventListener('click', () => {
+          const defColor = DEFAULT_ROUTE_COLOR;
+          savedRouteColors[String(routeId)] = defColor;
+          const obj = routeLayers.get(routeId);
+          if (obj) {
+            try { obj.polyline.setStyle({ color: defColor }); } catch (err) {}
+            obj.markers.forEach(m => { try { m.setStyle({ color: defColor, fillColor: defColor }); } catch (err) {} });
+            obj.color = defColor;
+          }
+          fetch('/api/routes/colors', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ route_id: routeId, color: defColor }) }).catch(()=>{});
+          renderLegendSummary();
+          showToast(`Reset color for Route ${routeId}`, 'info');
         });
         legend.appendChild(row);
       });
@@ -290,7 +336,7 @@
     }
 
     async function loadDefault() {
-      statusEl.textContent = 'Loading work_orders.csv…';
+      statusText.textContent = 'Loading work_orders.csv…';
       try {
         const resp = await fetch('/work_orders.csv', { cache: 'no-store' });
         if (!resp.ok) throw new Error('Not found');
@@ -298,9 +344,10 @@
         currentData = parseCsvText(text);
         buildFilters(currentData);
         plotRoutes(currentData);
-        statusEl.textContent = `Loaded ${currentData.length} rows`;
+        statusText.textContent = `Loaded ${currentData.length} rows`;
       } catch (e) {
-        statusEl.textContent = 'Could not load work_orders.csv.';
+        statusText.textContent = 'Could not load work_orders.csv.';
+        showToast('Failed to load work orders', 'error');
       }
     }
 
@@ -320,19 +367,45 @@
       loadDefault();
     });
 
+    btnReload.addEventListener('click', () => { setSpinner(true); Promise.all([loadDetections(), loadDefault()]).finally(() => setSpinner(false)); });
+    document.getElementById('btnResetAllColors')?.addEventListener('click', () => {
+      // Reset saved colors
+      const routeIds = Array.from(routeLayers.keys());
+      routeIds.forEach(rid => {
+        const obj = routeLayers.get(rid);
+        if (obj) {
+          try { obj.polyline.setStyle({ color: DEFAULT_ROUTE_COLOR }); } catch(_){}
+          obj.markers.forEach(m => { try { m.setStyle({ color: DEFAULT_ROUTE_COLOR, fillColor: DEFAULT_ROUTE_COLOR }); } catch(_){} });
+          obj.color = DEFAULT_ROUTE_COLOR;
+        }
+        savedRouteColors[String(rid)] = DEFAULT_ROUTE_COLOR;
+        fetch('/api/routes/colors', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ route_id: rid, color: DEFAULT_ROUTE_COLOR }) }).catch(()=>{});
+      });
+      renderLegendSummary();
+      showToast('Reset all route colors', 'info');
+    });
+
     // Subscribe to SSE for live route updates
     try {
       if ('EventSource' in window) {
-        const es = new EventSource('/events');
-        es.onmessage = (ev) => {
-          try {
-            const msg = JSON.parse(ev.data);
-            if (msg && msg.type === 'routesUpdated') {
-              // Reload routes from CSV
-              loadDefault();
-            }
-          } catch (e) { /* ignore */ }
+        let es;
+        let reconnectDelay = 1000;
+        const connect = () => {
+          es = new EventSource('/events');
+          es.onopen = () => { sseDot.className = 'inline-block w-2.5 h-2.5 rounded-full bg-emerald-400'; reconnectDelay = 1000; };
+          es.onerror = () => { sseDot.className = 'inline-block w-2.5 h-2.5 rounded-full bg-yellow-400'; try { es.close(); } catch(_){}; setTimeout(connect, Math.min(10000, reconnectDelay)); reconnectDelay *= 2; };
+          es.onmessage = (ev) => {
+            try {
+              const msg = JSON.parse(ev.data);
+              if (msg && msg.type === 'routesUpdated') {
+                setSpinner(true);
+                loadDefault().finally(() => setSpinner(false));
+                showToast('Routes updated', 'success');
+              }
+            } catch (_) {}
+          };
         };
+        connect();
       }
     } catch (e) { /* ignore */ }
 

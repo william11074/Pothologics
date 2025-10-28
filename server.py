@@ -201,8 +201,8 @@ def _finalize_track(device_id: str, t: dict):
         "duration_s": duration_s,
         "lat": t.get("best_lat"),
         "lon": t.get("best_lon"),
-        # NOTE: your table column is 'confidence_peak'; match that name here if needed
-        "confidence": t.get("best_conf"),
+        # Standardize on confidence_peak
+        "confidence_peak": t.get("best_conf"),
         "image_url": image_url,
     })
 
@@ -725,17 +725,17 @@ def api_log():
     try:
         payload = request.get_json(force=True)
         ts = payload.get("timestamp") or datetime.utcnow().isoformat()
-        lat = payload.get("lat"); lon = payload.get("lon"); conf = payload.get("confidence")
+        lat = payload.get("lat"); lon = payload.get("lon"); conf = payload.get("confidence_peak") or payload.get("confidence")
         out = Path("detections.csv"); new_file = not out.exists()
         with out.open("a", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             if new_file:
-                w.writerow(["timestamp", "lat", "lon", "confidence", "device_id", "image_url"])
+                w.writerow(["timestamp", "lat", "lon", "confidence_peak", "device_id", "image_url"])
             device_id = request.headers.get("X-Device-ID") or request.args.get("device_id") or None
             w.writerow([ts, lat, lon, conf, device_id, None])
         # Mirror to Supabase (fields may be NULL; table should allow it)
         supabase_insert_detection({
-            "timestamp": ts, "device_id": device_id, "lat": lat, "lon": lon, "confidence": conf, "image_url": None,
+            "timestamp": ts, "device_id": device_id, "lat": lat, "lon": lon, "confidence_peak": conf, "image_url": None,
         })
         return add_cors(jsonify({"logged": True}))
     except Exception as e:
@@ -786,12 +786,12 @@ def list_detections():
     """
     out = Path("detections.csv")
     if not out.exists():
-        return add_cors(jsonify({"rows": [], "headers": ["timestamp", "lat", "lon", "confidence", "device_id", "image_url"]}))
+        return add_cors(jsonify({"rows": [], "headers": ["timestamp", "lat", "lon", "confidence_peak", "device_id", "image_url"]}))
     limit = request.args.get('limit', default=200, type=int)
     rows = []
     with out.open("r", encoding="utf-8", newline="") as f:
         reader = csv.reader(f)
-        headers = next(reader, ["timestamp","lat","lon","confidence","device_id","image_url"])
+        headers = next(reader, ["timestamp","lat","lon","confidence_peak","device_id","image_url"])
         for r in reader:
             rows.append(r)
     if limit and limit > 0:
@@ -804,7 +804,7 @@ def download_detections():
     out = Path("detections.csv")
     if not out.exists():
         mem = io.StringIO(); writer = csv.writer(mem)
-        writer.writerow(["timestamp","lat","lon","confidence","device_id","image_url"])
+        writer.writerow(["timestamp","lat","lon","confidence_peak","device_id","image_url"])
         mem.seek(0)
         return add_cors(send_file(io.BytesIO(mem.getvalue().encode('utf-8')), as_attachment=True, download_name='detections.csv', mimetype='text/csv'))
     return add_cors(send_from_directory(directory=str(out.parent), path=out.name, as_attachment=True))
