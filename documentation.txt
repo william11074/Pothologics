@@ -3,6 +3,8 @@ cd directory then run pipreqs . to generate requirements.txt
 Commands
 pipreqs . [--force]
 
+Things needed to be fixed
+routes.html does not implement map.html directly so the code for displaying data on the leaflet map is written twice
 
 Note:
 AI assistance was used to create frontend design
