@@ -167,22 +167,22 @@ class PotholeRepairOptimizer:
         if not self.cluster_routes:
             raise ValueError("Run optimize_routes() first")
 
-        # Load road colors from JSON file
-        colors_map = {}
-        try:
-            colors_path = Path('route_colors.json')
-            if colors_path.exists():
-                with colors_path.open('r', encoding='utf-8') as f:
-                    colors_map = {str(k): str(v) for k, v in json.load(f).items()}
-        except Exception:
-            colors_map = {}
+        # # Load road colors from JSON file (code should be redundant now because colors are generated directly from the JSON file when showing on the website)
+        # colors_map = {}
+        # try:
+        #     colors_path = Path('route_colors.json')
+        #     if colors_path.exists():
+        #         with colors_path.open('r', encoding='utf-8') as f:
+        #             colors_map = {str(k): str(v) for k, v in json.load(f).items()}
+        # except Exception:
+        #     colors_map = {}
 
         work_orders = []
         for route_id, route_df in self.cluster_routes.items():
             route_df = route_df.copy()
             route_df['route_id'] = route_id
-            # Attach route color if available
-            route_df['route_color'] = colors_map.get(str(route_id), None)
+            # Redundant
+            # route_df['route_color'] = colors_map.get(str(route_id), None)
 
             stats = self.route_stats.get(route_id, {})
             route_df['total_km'] = stats.get('total_km')

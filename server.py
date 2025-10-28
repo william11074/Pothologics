@@ -207,9 +207,9 @@ def _finalize_track(device_id: str, t: dict):
     start_ts = start_dt.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
     end_ts = end_dt.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
 
-    # Upload the best frame crop, if we captured one
+    # Upload the best frame crop only if using real data (avoid Supabase during simulation)
     image_url = None
-    if t.get("best_img_bytes"):
+    if _active_source_is_real() and t.get("best_img_bytes"):
         img_uuid = t.get("id") or str(uuid.uuid4())
         day = end_dt.strftime("%Y-%m-%d")
         img_path = f"{device_id}/{day}/{img_uuid}.jpg"
@@ -230,20 +230,20 @@ def _finalize_track(device_id: str, t: dict):
             t.get("best_lat"), t.get("best_lon"), t.get("best_conf"), image_url
         ])
 
-    # Mirror to Supabase table (single row per finalized object)
-    supabase_insert_detection({
-        "detection_id": t.get("id"),
-        "device_id": device_id,
-        "cls": t.get("cls"),
-        "start_timestamp": start_ts,
-        "end_timestamp": end_ts,
-        "duration_s": duration_s,
-        "lat": t.get("best_lat"),
-        "lon": t.get("best_lon"),
-        # Standardize on confidence_peak
-        "confidence_peak": t.get("best_conf"),
-        "image_url": image_url,
-    })
+    # Mirror to Supabase only when using real data
+    if _active_source_is_real():
+        supabase_insert_detection({
+            "detection_id": t.get("id"),
+            "device_id": device_id,
+            "cls": t.get("cls"),
+            "start_timestamp": start_ts,
+            "end_timestamp": end_ts,
+            "duration_s": duration_s,
+            "lat": t.get("best_lat"),
+            "lon": t.get("best_lon"),
+            "confidence_peak": t.get("best_conf"),
+            "image_url": image_url,
+        })
 
     # Kick off a background recluster + route rebuild (debounced)
     try:
@@ -982,10 +982,11 @@ def api_log():
                 w.writerow(["timestamp", "lat", "lon", "confidence_peak", "device_id", "image_url"])
             device_id = request.headers.get("X-Device-ID") or request.args.get("device_id") or None
             w.writerow([ts, lat, lon, conf, device_id, None])
-        # Mirror to Supabase (fields may be NULL; table should allow it)
-        supabase_insert_detection({
-            "timestamp": ts, "device_id": device_id, "lat": lat, "lon": lon, "confidence_peak": conf, "image_url": None,
-        })
+        # Mirror to Supabase only when using real data (avoid cross-contamination during simulation)
+        if _active_source_is_real():
+            supabase_insert_detection({
+                "timestamp": ts, "device_id": device_id, "lat": lat, "lon": lon, "confidence_peak": conf, "image_url": None,
+            })
         return add_cors(jsonify({"logged": True}))
     except Exception as e:
         return add_cors(jsonify({"error": str(e)})), 400
@@ -1112,3 +1113,8 @@ def download_detections():
 if __name__ == "__main__":
     # In production use a proper WSGI/ASGI server (gunicorn/uvicorn)
     app.run(host="0.0.0.0", port=5000, debug=True)
+def _active_source_is_real() -> bool:
+    try:
+        return _load_detections_source() == 'real'
+    except Exception:
+        return False
