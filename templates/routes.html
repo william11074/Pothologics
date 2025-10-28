@@ -34,7 +34,8 @@
         <div class="space-y-2">
           <div class="flex items-center justify-between gap-2">
             <div id="status" class="text-sm text-gray-300 flex items-center gap-2">
-              <span id="spinner" class="hidden w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></span>
+              <span id="spinner"
+                class="hidden w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></span>
               <span id="statusText">Loading routes…</span>
             </div>
             <div class="flex items-center gap-2">
@@ -55,19 +56,18 @@
             <input id="chkDetections" type="checkbox" checked class="accent-blue-500">
             <label for="chkDetections" class="text-gray-300 text-sm">Show detections</label>
           </div>
-          <!-- Per-route color controls are rendered in the legend for each route -->
         </div>
 
         <div class="border-t border-slate-800 pt-3">
           <h2 class="text-white font-semibold mb-2">Legend</h2>
           <div class="mb-2 flex items-center justify-end">
-            <button id="btnResetAllColors" class="text-xs px-2 py-1 rounded bg-slate-800 hover:bg-slate-700">Reset All Colors</button>
+            <button id="btnResetAllColors" class="text-xs px-2 py-1 rounded bg-slate-800 hover:bg-slate-700">Reset All
+              Colors</button>
           </div>
           <div id="legend" class="space-y-1 text-sm text-gray-300 max-h-64 overflow-y-auto"></div>
         </div>
       </div>
 
-      <!-- Map -->
       <div class="lg:col-span-3">
         <div id="map" class="w-full h-[70vh] rounded-xl border border-slate-800"></div>
       </div>
@@ -85,27 +85,28 @@
     const legend = document.getElementById('legend');
     const chkDetections = document.getElementById('chkDetections');
 
-    // Leaflet map
+    // generate leaflet map
     const map = L.map('map').setView([37.7749, -122.4194], 12);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
 
-    // Ensure routes draw above detections using custom panes
+    // make sure that the routes are on top of the detections so that they are more visible
     map.createPane('detections');
-    map.getPane('detections').style.zIndex = 390; // below default overlayPane (400)
+    map.getPane('detections').style.zIndex = 390;
     map.createPane('routes');
-    map.getPane('routes').style.zIndex = 410; // above default overlayPane
+    map.getPane('routes').style.zIndex = 410;
 
     const DEFAULT_ROUTE_COLOR = '#1f77b4';
-    let savedRouteColors = {}; // { route_id: '#RRGGBB' }
-    let routeLayers = new Map(); // route_id -> {polyline, markers:[], color}
-    let currentData = null;      // rows from work_orders.csv
-    let currentGrouped = new Map(); // route_id -> pts[] (from currentData)
+    let savedRouteColors = {};
+    let routeLayers = new Map(); 
+    let currentData = null; 
+    let currentGrouped = new Map(); 
     const detectionsLayer = L.layerGroup(undefined, { pane: 'detections' }).addTo(map);
-    let detMarkers = []; // { marker, baseRadius }
+    let detMarkers = [];
 
+    // reset map for updates
     function clearMap() {
       for (const [, obj] of routeLayers) {
         map.removeLayer(obj.polyline);
@@ -119,12 +120,12 @@
       const scale = Math.pow(1.2, (z - 13)); // shrink when zoomed out, grow when zoomed in
       detMarkers.forEach(({ marker, baseRadius }) => {
         const r = Math.max(2, Math.min(12, baseRadius * scale));
-        try { marker.setStyle({ radius: r }); } catch (e) {}
+        try { marker.setStyle({ radius: r }); } catch (e) { }
       });
     }
     map.on('zoomend', updateDetectionMarkerSizes);
 
-    function showToast(message, type='info') {
+    function showToast(message, type = 'info') {
       const el = document.createElement('div');
       const colors = type === 'success' ? 'bg-emerald-600' : type === 'error' ? 'bg-rose-600' : 'bg-slate-700';
       el.className = `${colors} text-white px-3 py-2 rounded shadow`;
@@ -135,6 +136,7 @@
 
     function setSpinner(on) { spinnerEl.classList.toggle('hidden', !on); }
 
+    // filters for different routes, in the future can be implemented to add more types of filters
     function buildFilters(data) {
       const routes = Array.from(new Set(data.map(r => r.route_id))).sort((a, b) => a - b);
       routeFilter.innerHTML = '<option value="">All</option>' + routes.map(r => `<option value="${r}">${r}</option>`).join('');
@@ -145,6 +147,7 @@
       return data.filter(r => (!route || String(r.route_id) === String(route)));
     }
 
+    // Shows main functionalities of legend such as different routes, route colors, etc.
     function renderLegendSummary() {
       legend.innerHTML = '';
       Array.from(currentGrouped.keys()).sort((a, b) => a - b).forEach((routeId) => {
@@ -168,36 +171,32 @@
         `;
         // click on label opens details
         row.querySelector('[data-route]')?.addEventListener('click', () => { renderRouteDetails(routeId); fitRoute(routeId); });
-        // color input saves immediately
+        // saves new color input into JSON file
         row.querySelector('[data-color-for]')?.addEventListener('input', (e) => {
           const newColor = e.target.value;
           savedRouteColors[String(routeId)] = newColor;
-          // update map layers
           const obj = routeLayers.get(routeId);
           if (obj) {
-            try { obj.polyline.setStyle({ color: newColor }); } catch (err) {}
-            obj.markers.forEach(m => { try { m.setStyle({ color: newColor, fillColor: newColor }); } catch (err) {} });
+            try { obj.polyline.setStyle({ color: newColor }); } catch (err) { }
+            obj.markers.forEach(m => { try { m.setStyle({ color: newColor, fillColor: newColor }); } catch (err) { } });
             obj.color = newColor;
           }
-          // persist to server
           fetch('/api/routes/colors', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ route_id: routeId, color: newColor })
-          }).catch(()=>{});
-          // refresh color chip
+          }).catch(() => { });
           renderLegendSummary();
         });
-        // per-route reset
         row.querySelector('[data-reset-for]')?.addEventListener('click', () => {
           const defColor = DEFAULT_ROUTE_COLOR;
           savedRouteColors[String(routeId)] = defColor;
           const obj = routeLayers.get(routeId);
           if (obj) {
-            try { obj.polyline.setStyle({ color: defColor }); } catch (err) {}
-            obj.markers.forEach(m => { try { m.setStyle({ color: defColor, fillColor: defColor }); } catch (err) {} });
+            try { obj.polyline.setStyle({ color: defColor }); } catch (err) { }
+            obj.markers.forEach(m => { try { m.setStyle({ color: defColor, fillColor: defColor }); } catch (err) { } });
             obj.color = defColor;
           }
-          fetch('/api/routes/colors', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ route_id: routeId, color: defColor }) }).catch(()=>{});
+          fetch('/api/routes/colors', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ route_id: routeId, color: defColor }) }).catch(() => { });
           renderLegendSummary();
           showToast(`Reset color for Route ${routeId}`, 'info');
         });
@@ -205,6 +204,7 @@
       });
     }
 
+    // zoom in to a specific route
     function fitRoute(routeId) {
       const pts = (currentGrouped.get(routeId) || []).map(p => [parseFloat(p.latitude), parseFloat(p.longitude)]).filter(ll => Number.isFinite(ll[0]) && Number.isFinite(ll[1]));
       if (!pts.length) return;
@@ -212,6 +212,7 @@
       map.fitBounds(bounds, { padding: [20, 20] });
     }
 
+    // Route details on legend
     function renderRouteDetails(routeId) {
       const pts = (currentGrouped.get(routeId) || []).slice().sort((a, b) => Number(a.route_order) - Number(b.route_order));
       const csvColor = (pts[0] && pts[0].route_color) ? String(pts[0].route_color) : null;
@@ -237,7 +238,6 @@
         </div>`;
       const rows = pts.map((p, i) => `<div class="py-1 border-b border-slate-800/50 text-gray-200"><span class="text-gray-400 mr-2">#${i + 1}</span>${Number(p.latitude).toFixed(5)}, ${Number(p.longitude).toFixed(5)}<span class="ml-2 text-gray-400">${p.severity ? 'Severity: ' + p.severity : ''}</span>${p.report_date ? `<span class=\"ml-2 text-gray-400\">Reported: ${p.report_date}</span>` : ''}</div>`).join('');
       legend.innerHTML = header + `<div>${rows || '<div class="text-gray-400">No stops</div>'}</div>`;
-      // Set dataset default based on current work_orders source
       try {
         const dsSelInit = document.getElementById('datasetSelect');
         if (dsSelInit) {
@@ -297,7 +297,7 @@
           // Bounce the legend to route details and emphasize selected line
           renderRouteDetails(routeId);
           fitRoute(routeId);
-          try { line.bringToFront(); } catch(e) {}
+          try { line.bringToFront(); } catch (e) { }
           line.setStyle({ weight: 5, opacity: 1.0 });
           setTimeout(() => line.setStyle({ weight: 3, opacity: 0.8 }), 800);
         });
@@ -310,17 +310,15 @@
         });
         routeLayers.set(routeId, { polyline: line, markers, color });
         latlngs.forEach(ll => bounds.push(ll));
-        // Defer legend rendering to a unified function
       });
 
       if (bounds.length) map.fitBounds(bounds, { padding: [20, 20] });
-      // Build the interactive legend (with per-route color pickers)
       renderLegendSummary();
     }
 
     function parseCsvText(text) {
       const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
-      // Normalize field names used in plotting
+      // Normalize names (I'm so bad at keeping track of them)
       const rows = parsed.data.map(r => ({
         route_id: r.route_id ?? r.Route_ID ?? r.route ?? r.RouteId,
         route_order: r.route_order ?? r.Order ?? r.order,
@@ -352,7 +350,6 @@
     }
 
     routeFilter.addEventListener('change', () => currentData && plotRoutes(currentData));
-    // Per-route color changes are handled in the legend row color inputs
     chkDetections.addEventListener('change', () => {
       detectionsLayer.clearLayers();
       if (chkDetections.checked) loadDetections();
@@ -369,23 +366,22 @@
 
     btnReload.addEventListener('click', () => { setSpinner(true); Promise.all([loadDetections(), loadDefault()]).finally(() => setSpinner(false)); });
     document.getElementById('btnResetAllColors')?.addEventListener('click', () => {
-      // Reset saved colors
       const routeIds = Array.from(routeLayers.keys());
       routeIds.forEach(rid => {
         const obj = routeLayers.get(rid);
         if (obj) {
-          try { obj.polyline.setStyle({ color: DEFAULT_ROUTE_COLOR }); } catch(_){}
-          obj.markers.forEach(m => { try { m.setStyle({ color: DEFAULT_ROUTE_COLOR, fillColor: DEFAULT_ROUTE_COLOR }); } catch(_){} });
+          try { obj.polyline.setStyle({ color: DEFAULT_ROUTE_COLOR }); } catch (_) { }
+          obj.markers.forEach(m => { try { m.setStyle({ color: DEFAULT_ROUTE_COLOR, fillColor: DEFAULT_ROUTE_COLOR }); } catch (_) { } });
           obj.color = DEFAULT_ROUTE_COLOR;
         }
         savedRouteColors[String(rid)] = DEFAULT_ROUTE_COLOR;
-        fetch('/api/routes/colors', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ route_id: rid, color: DEFAULT_ROUTE_COLOR }) }).catch(()=>{});
+        fetch('/api/routes/colors', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ route_id: rid, color: DEFAULT_ROUTE_COLOR }) }).catch(() => { });
       });
       renderLegendSummary();
       showToast('Reset all route colors', 'info');
     });
 
-    // Subscribe to SSE for live route updates
+    // SSE for live updates
     try {
       if ('EventSource' in window) {
         let es;
@@ -393,7 +389,7 @@
         const connect = () => {
           es = new EventSource('/events');
           es.onopen = () => { sseDot.className = 'inline-block w-2.5 h-2.5 rounded-full bg-emerald-400'; reconnectDelay = 1000; };
-          es.onerror = () => { sseDot.className = 'inline-block w-2.5 h-2.5 rounded-full bg-yellow-400'; try { es.close(); } catch(_){}; setTimeout(connect, Math.min(10000, reconnectDelay)); reconnectDelay *= 2; };
+          es.onerror = () => { sseDot.className = 'inline-block w-2.5 h-2.5 rounded-full bg-yellow-400'; try { es.close(); } catch (_) { }; setTimeout(connect, Math.min(10000, reconnectDelay)); reconnectDelay *= 2; };
           es.onmessage = (ev) => {
             try {
               const msg = JSON.parse(ev.data);
@@ -402,16 +398,13 @@
                 loadDefault().finally(() => setSpinner(false));
                 showToast('Routes updated', 'success');
               }
-            } catch (_) {}
+            } catch (_) { }
           };
         };
         connect();
       }
     } catch (e) { /* ignore */ }
 
-    // =============================
-    // Detections (simulated) layer
-    // =============================
     function parseDetectionsCsv(text) {
       const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
       return parsed.data.map(r => ({
@@ -430,11 +423,11 @@
 
     async function loadDetections() {
       try {
-        const resp = await fetch('/detections_simulated.csv', { cache: 'no-store' });
+        const resp = await fetch('/detections.csv', { cache: 'no-store' });
         if (!resp.ok) return;
         const text = await resp.text();
         const dets = parseDetectionsCsv(text);
-        const color = '#f43f5e'; // rose-500
+        const color = '#f43f5e'; // active source color
         detMarkers = [];
         dets.forEach(d => {
           const baseRadius = 4 + Math.min(8, Math.max(0, (parseFloat(d.confidence || 0) || 0) * 6));
@@ -447,11 +440,9 @@
         });
         updateDetectionMarkerSizes();
       } catch (e) {
-        // ignore
       }
     }
 
-    // Load detections initially
     loadDetections();
   </script>
 </body>
