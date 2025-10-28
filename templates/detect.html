@@ -11,6 +11,8 @@
     tailwind.config = { theme: { extend: { colors: { primary: '#3b82f6', secondary: '#1e293b', accent: '#f97316', dark: '#0f172a' }, fontFamily: { sans: ['Inter', 'sans-serif'] } } } };
   </script>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#3b82f6">
 </head>
 
 <body class="bg-dark min-h-screen">
@@ -254,6 +256,13 @@
       a.href = url; a.download = `pothole_detections_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
       a.click(); URL.revokeObjectURL(url);
     });
+  </script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').catch(()=>{});
+      });
+    }
   </script>
 </body>
 

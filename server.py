@@ -814,6 +814,18 @@ def serve_work_orders_csv():
         return add_cors(jsonify({"error": "work_orders.csv not found"})), 404
     return add_cors(send_from_directory(directory=str(out.parent), path=out.name, as_attachment=False))
 
+# PWA assets served at root scope for wide SW/manifest scope
+@app.route('/manifest.webmanifest')
+def pwa_manifest():
+    return add_cors(send_from_directory(directory='static', path='manifest.webmanifest', as_attachment=False))
+
+@app.route('/sw.js')
+def pwa_sw():
+    resp = send_from_directory(directory='static', path='sw.js', as_attachment=False)
+    # Ensure correct MIME
+    resp.headers['Content-Type'] = 'application/javascript'
+    return add_cors(resp)
+
 @app.route("/detections_simulated.csv", methods=["GET"])
 def serve_detections_simulated_csv():
     """Serve detections_simulated.csv from the project root if it exists."""

@@ -25,6 +25,8 @@
         }
     </script>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <meta name="theme-color" content="#3b82f6">
 </head>
 
 <body class="bg-dark">
@@ -201,7 +203,7 @@
                 </div>
             </div>
         </div>
-    </footer>
+</footer>
 
     <div class="mobile-nav md:hidden">
         <a href="#section1" class="mobile-nav-btn">
@@ -378,6 +380,13 @@
             .then(data => {
                 document.getElementById("navbar-placeholder").innerHTML = data;
             });
+    </script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').catch(()=>{});
+        });
+      }
     </script>
 </body>
 
