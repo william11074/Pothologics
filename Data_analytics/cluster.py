@@ -33,7 +33,9 @@ def _resolve_default_csv(explicit_path: str | None = None) -> str:
     if Path(candidate).exists():
         return candidate
     # Last resort
-    return 'detections.csv' if Path('detections.csv').exists() else 'detections_simulated.csv'
+    if Path('detections.csv').exists():
+        return 'detections.csv'
+    return 'detections_simulated.csv'
 
 
 class PotholeRepairOptimizer:
@@ -62,7 +64,7 @@ class PotholeRepairOptimizer:
     # pothole clustering algorithm using DBSCAN
     # eps_km is the maximum distance between two samples for one to be considered
     # min_samples is the minimum number of potholes per cluster needed
-    def cluster_potholes(self, eps_km=0.2, min_samples=3):
+    def cluster_potholes(self, eps_km=0.3, min_samples=3):
         if not {'latitude','longitude'}.issubset(self.df.columns):
             raise ValueError("Input must have latitude/longitude columns (or lat/lon).")
         coords = self.df[['latitude', 'longitude']].values

@@ -31,6 +31,8 @@ except Exception:
 app = Flask(__name__, template_folder="templates", static_folder="static", static_url_path="/static")
 app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024
 
+# CSVs are stored at project root (no subfolder)
+
 # Set up Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -74,6 +76,43 @@ def supabase_insert_detection(record: dict) -> None:
         SUPABASE.table(SUPABASE_TABLE).insert(record).execute()
     except Exception:
         pass
+
+def supabase_fetch_all_detections() -> list[dict]:
+    """Fetch all detections rows from Supabase table (best-effort)."""
+    if not supabase_enabled():
+        return []
+    try:
+        res = SUPABASE.table(SUPABASE_TABLE).select("*").execute()  # type: ignore
+        data = getattr(res, 'data', None)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+    return []
+
+def supabase_export_detections_csv(path: str) -> bool:
+    """Export Supabase detections to a local CSV file matching our expected columns."""
+    try:
+        rows = supabase_fetch_all_detections()
+        if not rows:
+            return False
+        cols = [
+            "detection_id","device_id","cls","start_timestamp","end_timestamp","duration_s",
+            "lat","lon","confidence_peak","image_url"
+        ]
+        out = Path(path)
+        with out.open('w', encoding='utf-8', newline='') as f:
+            w = csv.writer(f)
+            w.writerow(cols)
+            for r in rows:
+                w.writerow([
+                    r.get('detection_id'), r.get('device_id'), r.get('cls'), r.get('start_timestamp'),
+                    r.get('end_timestamp'), r.get('duration_s'), r.get('lat'), r.get('lon'),
+                    r.get('confidence_peak') or r.get('confidence'), r.get('image_url')
+                ])
+        return True
+    except Exception:
+        return False
 
 # Server sent events (SSE) broadcaster (for live update of the map)
 import queue
@@ -289,6 +328,9 @@ def _run_recluster(input_csv: str = "detections.csv") -> bool:
     if Optimizer is None:
         return False
     try:
+        # If using real data and Supabase is available, export latest before clustering
+        if Path(input_csv).name == 'detections.csv' and supabase_enabled():
+            supabase_export_detections_csv('detections.csv')
         opt = Optimizer(input_csv)
         opt.cluster_potholes()
         opt.optimize_routes()
@@ -343,8 +385,8 @@ def api_recluster():
     if request.method == 'OPTIONS':
         return add_cors(make_response("", 204))
     try:
-        csv_path = (request.get_json(silent=True) or {}).get('csv') or 'detections.csv'
-        schedule_recluster_for(csv_path, delay_s=0.1)
+        csv_in = (request.get_json(silent=True) or {}).get('csv') or 'detections.csv'
+        schedule_recluster_for(csv_in, delay_s=0.1)
         return add_cors(jsonify({ 'scheduled': True }))
     except Exception as e:
         return add_cors(jsonify({ 'error': str(e) })), 400
@@ -459,6 +501,101 @@ def _remove_points_from_csv(csv_path: Path, points: list[tuple[float,float]], to
     tmp.replace(csv_path)
     return removed
 
+def supabase_delete_near_points(points: list[tuple[float,float]], tol_m: float) -> int:
+    """Delete Supabase detections within tolerance meters of any point. Returns count deleted (best-effort)."""
+    if not supabase_enabled() or not points:
+        return 0
+
+def _remove_ids_from_csv(csv_path: Path, ids: list[str]) -> int:
+    """Remove rows whose detection_id is in ids from a CSV. Returns number removed."""
+    if not csv_path.exists() or not ids:
+        return 0
+    ids_set = set(map(str, ids))
+    removed = 0
+    with csv_path.open('r', encoding='utf-8', newline='') as f:
+        reader = csv.reader(f)
+        headers = next(reader, [])
+        cols = {h: i for i, h in enumerate(headers)}
+        didx = None
+        # Try common header variants
+        for key in ('detection_id', 'id'):
+            if key in cols:
+                didx = cols[key]
+                break
+        if didx is None:
+            return 0
+        rows = []
+        for r in reader:
+            if len(r) <= didx:
+                rows.append(r)
+                continue
+            if str(r[didx]) in ids_set:
+                removed += 1
+            else:
+                rows.append(r)
+    tmp = csv_path.with_suffix(csv_path.suffix + ".tmp")
+    with tmp.open('w', encoding='utf-8', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(headers)
+        w.writerows(rows)
+    tmp.replace(csv_path)
+    return removed
+
+def supabase_delete_ids(ids: list[str]) -> int:
+    """Delete detections in Supabase by detection_id. Returns number requested (best-effort)."""
+    if not supabase_enabled() or not ids:
+        return 0
+    try:
+        SUPABASE.table(SUPABASE_TABLE).delete().in_('detection_id', list(map(str, ids))).execute()  # type: ignore
+        return len(ids)
+    except Exception:
+        # Fallback: try individually
+        deleted = 0
+        for d in ids:
+            try:
+                SUPABASE.table(SUPABASE_TABLE).delete().eq('detection_id', str(d)).execute()  # type: ignore
+                deleted += 1
+            except Exception:
+                pass
+        return deleted
+    try:
+        rows = supabase_fetch_all_detections()
+        if not rows:
+            return 0
+        tol_km = max(0.0, float(tol_m)) / 1000.0
+        to_delete: list[str] = []
+        for r in rows:
+            try:
+                lat = float(r.get('lat'))
+                lon = float(r.get('lon'))
+            except Exception:
+                continue
+            for plat, plon in points:
+                try:
+                    if _haversine_km(lat, lon, plat, plon) <= tol_km:
+                        det_id = r.get('detection_id')
+                        if det_id:
+                            to_delete.append(det_id)
+                        break
+                except Exception:
+                    continue
+        deleted = 0
+        if to_delete:
+            try:
+                SUPABASE.table(SUPABASE_TABLE).delete().in_('detection_id', to_delete).execute()  # type: ignore
+                deleted = len(to_delete)
+            except Exception:
+                # Fallback: delete individually
+                for d in to_delete:
+                    try:
+                        SUPABASE.table(SUPABASE_TABLE).delete().eq('detection_id', d).execute()  # type: ignore
+                        deleted += 1
+                    except Exception:
+                        pass
+        return deleted
+    except Exception:
+        return 0
+
 @app.route('/api/routes/fix', methods=['POST','OPTIONS'])
 def api_fix_route():
     if request.method == 'OPTIONS':
@@ -508,11 +645,57 @@ def api_fix_route():
             return add_cors(jsonify({ 'error': f'route {route_id} not found or has no points' })), 404
 
         removed = _remove_points_from_csv(csv_path, points, tol_m)
+        supa_removed = 0
+        if source == 'real':
+            supa_removed = supabase_delete_near_points(points, tol_m)
 
         # Rebuild work orders from the chosen source CSV
         schedule_recluster_for(str(csv_path), delay_s=0.1)
 
-        return add_cors(jsonify({ 'ok': True, 'route_id': route_id, 'removed': removed, 'source': str(csv_path) }))
+        return add_cors(jsonify({ 'ok': True, 'route_id': route_id, 'removed': removed, 'supabase_removed': supa_removed, 'source': str(csv_path) }))
+    except Exception as e:
+        return add_cors(jsonify({ 'error': str(e) })), 400
+
+# =========================
+# Mark detections (potholes) as filled
+# =========================
+@app.route('/api/detections/fix', methods=['POST','OPTIONS'])
+def api_fix_detections():
+    if request.method == 'OPTIONS':
+        return add_cors(make_response("", 204))
+    try:
+        payload = request.get_json(force=True) or {}
+        ids = payload.get('detection_id') or payload.get('detection_ids')
+        if ids is not None and not isinstance(ids, list):
+            ids = [ids]
+        lat = payload.get('lat'); lon = payload.get('lon')
+        tol_m = float(payload.get('tolerance_m', 5.0))
+
+        # Resolve source: explicit payload, else active toggle
+        source = str(payload.get('source') or _load_detections_source()).lower()
+        csv_path = Path('detections.csv') if source == 'real' else Path('detections_simulated.csv')
+
+        removed_csv = 0
+        removed_supa = 0
+
+        if ids:
+            removed_csv = _remove_ids_from_csv(csv_path, list(map(str, ids)))
+            if source == 'real':
+                removed_supa = supabase_delete_ids(list(map(str, ids)))
+        elif lat is not None and lon is not None:
+            try:
+                plat = float(lat); plon = float(lon)
+            except Exception:
+                return add_cors(jsonify({ 'error': 'invalid lat/lon' })), 400
+            removed_csv = _remove_points_from_csv(csv_path, [(plat, plon)], tol_m)
+            if source == 'real':
+                removed_supa = supabase_delete_near_points([(plat, plon)], tol_m)
+        else:
+            return add_cors(jsonify({ 'error': 'provide detection_id(s) or lat/lon' })), 400
+
+        # Rebuild work orders from the chosen source CSV
+        schedule_recluster_for(str(csv_path), delay_s=0.1)
+        return add_cors(jsonify({ 'ok': True, 'source': source, 'removed': removed_csv, 'supabase_removed': removed_supa }))
     except Exception as e:
         return add_cors(jsonify({ 'error': str(e) })), 400
 
@@ -551,6 +734,7 @@ def ping():
 # Route color persistence
 # =========================
 ROUTE_COLORS_PATH = Path("route_colors.json")
+ROUTE_COLORS_LOCK = threading.Lock()
 
 def _load_route_colors() -> dict[str, str]:
     try:
@@ -565,7 +749,8 @@ def _load_route_colors() -> dict[str, str]:
 
 def _save_route_colors(colors: dict[str, str]) -> None:
     try:
-        tmp = ROUTE_COLORS_PATH.with_suffix(".json.tmp")
+        # Use a stable temp name to avoid suffix pitfalls on some platforms
+        tmp = ROUTE_COLORS_PATH.with_name(ROUTE_COLORS_PATH.name + ".tmp")
         with tmp.open("w", encoding="utf-8") as f:
             json.dump(colors, f, ensure_ascii=False, indent=2)
         tmp.replace(ROUTE_COLORS_PATH)
@@ -601,10 +786,30 @@ def set_route_color():
         rid_str = str(rid)
         if not _valid_hex_color(color):
             return add_cors(jsonify({ 'error': 'invalid color format, expected #RRGGBB' })), 400
-        colors = _load_route_colors()
-        colors[rid_str] = color
-        _save_route_colors(colors)
+        with ROUTE_COLORS_LOCK:
+            colors = _load_route_colors()
+            colors[rid_str] = color
+            _save_route_colors(colors)
         return add_cors(jsonify({ 'ok': True, 'route_id': rid_str, 'color': color }))
+    except Exception as e:
+        return add_cors(jsonify({ 'error': str(e) })), 400
+
+@app.route('/api/routes/colors/reset', methods=['POST','OPTIONS'])
+def reset_route_colors():
+    if request.method == 'OPTIONS':
+        return add_cors(make_response("", 204))
+    try:
+        body = request.get_json(silent=True) or {}
+        subset = body.get('route_ids')
+        with ROUTE_COLORS_LOCK:
+            if subset and isinstance(subset, list):
+                colors = _load_route_colors()
+                for rid in subset:
+                    colors.pop(str(rid), None)
+                _save_route_colors(colors)
+            else:
+                _save_route_colors({})
+        return add_cors(jsonify({ 'ok': True }))
     except Exception as e:
         return add_cors(jsonify({ 'error': str(e) })), 400
 
@@ -834,10 +1039,37 @@ def serve_detections_simulated_csv():
         return add_cors(jsonify({"error": "detections_simulated.csv not found"})), 404
     return add_cors(send_from_directory(directory=str(out.parent), path=out.name, as_attachment=False))
 
+@app.route("/route_summary.csv", methods=["GET"])
+def serve_route_summary_csv():
+    out = Path("route_summary.csv")
+    if not out.exists():
+        return add_cors(jsonify({"error": "route_summary.csv not found"})), 404
+    return add_cors(send_from_directory(directory=str(out.parent), path=out.name, as_attachment=False))
+
 @app.route("/detections.csv", methods=["GET"])
 def serve_active_detections_csv():
     """Serve the active detections CSV based on the configured source (real or simulated)."""
     src = _load_detections_source()
+    # For real data and Supabase, stream live export to avoid stale local CSV
+    if src == 'real' and supabase_enabled():
+        try:
+            rows = supabase_fetch_all_detections()
+            if not rows:
+                return add_cors(jsonify({"error": "no data", "source": src})), 404
+            mem = io.StringIO()
+            w = csv.writer(mem)
+            w.writerow(["detection_id","device_id","cls","start_timestamp","end_timestamp","duration_s","lat","lon","confidence_peak","image_url"])
+            for r in rows:
+                w.writerow([
+                    r.get('detection_id'), r.get('device_id'), r.get('cls'), r.get('start_timestamp'),
+                    r.get('end_timestamp'), r.get('duration_s'), r.get('lat'), r.get('lon'),
+                    r.get('confidence_peak') or r.get('confidence'), r.get('image_url')
+                ])
+            mem.seek(0)
+            return add_cors(send_file(io.BytesIO(mem.getvalue().encode('utf-8')), mimetype='text/csv', as_attachment=False, download_name='detections.csv'))
+        except Exception as e:
+            return add_cors(jsonify({"error": str(e)})), 500
+    # Otherwise serve local file
     out = Path('detections.csv') if src == 'real' else Path('detections_simulated.csv')
     if not out.exists():
         return add_cors(jsonify({"error": f"{out.name} not found", "source": src})), 404

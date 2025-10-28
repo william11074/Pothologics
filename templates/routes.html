@@ -140,7 +140,7 @@
 
     // filters for different routes, in the future can be implemented to add more types of filters
     function buildFilters(data) {
-      const routes = Array.from(new Set(data.map(r => r.route_id))).sort((a, b) => a - b);
+      const routes = Array.from(new Set(data.map(r => String(r.route_id)))).sort((a, b) => Number(a) - Number(b));
       routeFilter.innerHTML = '<option value="">All</option>' + routes.map(r => `<option value="${r}">${r}</option>`).join('');
     }
 
@@ -173,7 +173,7 @@
         `;
         // click on label opens details
         row.querySelector('[data-route]')?.addEventListener('click', () => { renderRouteDetails(routeId); fitRoute(routeId); });
-        // saves new color input into JSON file
+        // input: live preview only (no server write)
         row.querySelector('[data-color-for]')?.addEventListener('input', (e) => {
           const newColor = e.target.value;
           savedRouteColors[String(routeId)] = newColor;
@@ -183,11 +183,24 @@
             obj.markers.forEach(m => { try { m.setStyle({ color: newColor, fillColor: newColor }); } catch (err) { } });
             obj.color = newColor;
           }
-          fetch('/api/routes/colors', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ route_id: routeId, color: newColor })
-          }).catch(() => { });
           renderLegendSummary();
+        });
+        // change: persist to server and show notification
+        row.querySelector('[data-color-for]')?.addEventListener('change', async (e) => {
+          const newColor = e.target.value;
+          try {
+            setSpinner(true);
+            const resp = await fetch('/api/routes/colors', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ route_id: routeId, color: newColor })
+            });
+            if (!resp.ok) throw new Error('Save failed');
+            showToast(`Saved color for Route ${routeId}`, 'success');
+          } catch (_) {
+            showToast('Failed to save color', 'error');
+          } finally {
+            setSpinner(false);
+          }
         });
         row.querySelector('[data-reset-for]')?.addEventListener('click', () => {
           const defColor = DEFAULT_ROUTE_COLOR;
@@ -320,10 +333,14 @@
 
     function parseCsvText(text) {
       const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
-      // Normalize names (I'm so bad at keeping track of them)
-      const rows = parsed.data.map(r => ({
-        route_id: r.route_id ?? r.Route_ID ?? r.route ?? r.RouteId,
-        route_order: r.route_order ?? r.Order ?? r.order,
+      const rows = parsed.data.map(r => {
+        const ridRaw = r.route_id ?? r.Route_ID ?? r.route ?? r.RouteId;
+        const rid = ridRaw != null && ridRaw !== '' ? String(ridRaw).trim() : null;
+        const rorderRaw = r.route_order ?? r.Order ?? r.order;
+        const rorder = rorderRaw != null && rorderRaw !== '' ? Number(rorderRaw) : null;
+        return {
+        route_id: rid,
+        route_order: rorder,
         latitude: r.latitude ?? r.lat,
         longitude: r.longitude ?? r.lon,
         route_color: r.route_color,
@@ -331,7 +348,7 @@
         report_date: r.report_date,
         total_km: r.total_km,
         total_time_mins: r.total_time_mins,
-      }));
+      }});
       return rows.filter(r => r.route_id != null && r.latitude != null && r.longitude != null);
     }
 
@@ -344,7 +361,8 @@
         currentData = parseCsvText(text);
         buildFilters(currentData);
         plotRoutes(currentData);
-        statusText.textContent = `Loaded ${currentData.length} rows`;
+        const uniqueRoutes = Array.from(new Set(currentData.map(r => String(r.route_id)))).length;
+        statusText.textContent = `Loaded ${currentData.length} rows • ${uniqueRoutes} routes`;
       } catch (e) {
         statusText.textContent = 'Could not load work_orders.csv.';
         showToast('Failed to load work orders', 'error');
@@ -367,7 +385,13 @@
     });
 
     btnReload.addEventListener('click', () => { setSpinner(true); Promise.all([loadDetections(), loadDefault()]).finally(() => setSpinner(false)); });
-    document.getElementById('btnResetAllColors')?.addEventListener('click', () => {
+    document.getElementById('btnResetAllColors')?.addEventListener('click', async () => {
+      try {
+        setSpinner(true);
+        // Single server call clears persisted colors to avoid race conditions
+        await fetch('/api/routes/colors/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+      } catch (_) {}
+      // Locally reset all visible styles and state
       const routeIds = Array.from(routeLayers.keys());
       routeIds.forEach(rid => {
         const obj = routeLayers.get(rid);
@@ -377,10 +401,10 @@
           obj.color = DEFAULT_ROUTE_COLOR;
         }
         savedRouteColors[String(rid)] = DEFAULT_ROUTE_COLOR;
-        fetch('/api/routes/colors', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ route_id: rid, color: DEFAULT_ROUTE_COLOR }) }).catch(() => { });
       });
       renderLegendSummary();
       showToast('Reset all route colors', 'info');
+      setSpinner(false);
     });
 
     // SSE for live updates
@@ -438,6 +462,41 @@
           const conf = d.confidence != null ? `Conf: ${Number(d.confidence).toFixed(2)}` : '';
           const img = d.image_url ? `<div class="mt-1"><img src="${d.image_url}" alt="detection" class="max-w-[180px] rounded"/></div>` : '';
           m.bindPopup(`<div><b>${d.cls || 'Pothole'}</b><br>${d.device_id || ''}<br>${d.start_timestamp || ''}${d.end_timestamp ? ' → ' + d.end_timestamp : ''}<br>${[dur, conf].filter(Boolean).join(' • ')}${img}</div>`);
+          m.on('popupopen', () => {
+            try {
+              const pop = m.getPopup();
+              const root = pop && pop.getElement ? pop.getElement() : null;
+              const content = root ? root.querySelector('.leaflet-popup-content') : null;
+              if (content && !content.querySelector('[data-action="fill"]')) {
+                const wrap = document.createElement('div');
+                wrap.className = 'mt-2';
+                const btn = document.createElement('button');
+                btn.className = 'text-xs px-2 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white';
+                btn.setAttribute('data-action', 'fill');
+                btn.textContent = 'Mark Filled';
+                btn.addEventListener('click', async (ev) => {
+                  ev.preventDefault();
+                  setSpinner(true);
+                  statusText.textContent = 'Marking pothole filled…';
+                  try {
+                    const payload = (d.detection_id) ? { detection_id: d.detection_id } : { lat: d.lat, lon: d.lon };
+                    const resp2 = await fetch('/api/detections/fix', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                    const j = await resp2.json();
+                    if (!resp2.ok) throw new Error(j?.error || 'Request failed');
+                    showToast(`Pothole filled. Removed ${j.removed}${j.supabase_removed ? ' (+'+j.supabase_removed+' from Supabase)' : ''}`, 'success');
+                    await loadDetections();
+                    await loadDefault();
+                  } catch (e) {
+                    showToast(`Failed to mark filled: ${e}`, 'error');
+                  } finally {
+                    setSpinner(false);
+                  }
+                }, { once: true });
+                wrap.appendChild(btn);
+                content.appendChild(wrap);
+              }
+            } catch (_) {}
+          });
           detMarkers.push({ marker: m, baseRadius });
         });
         updateDetectionMarkerSizes();
