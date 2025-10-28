@@ -6,11 +6,10 @@
     <title>Pothole Repair Map (Embed)</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <!-- Leaflet -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
-    <!-- MarkerCluster (optional; used by potholeCluster) -->
+
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
     <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
@@ -28,41 +27,27 @@
             width: 100%;
             height: 100%;
         }
-
-        .legend .row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
-        .swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
-        .swatch.high { background: #d32f2f; }
-        .swatch.med  { background: #f57c00; }
-        .swatch.low  { background: #388e3c; }
     </style>
 </head>
 
 <body>
     <div id="map"></div>
-    <div class="legend">
-        <div class="row"><span class="swatch high"></span> High severity</div>
-        <div class="row"><span class="swatch med"></span> Medium</div>
-        <div class="row"><span class="swatch low"></span> Low</div>
-    </div>
 
     <script>
-        /***************
-         * Map Setup
-         ***************/
-        const map = L.map('map', { zoomControl: true }).setView([37.7749, -122.4194], 12); // default center (SF)
+        const map = L.map('map', { zoomControl: true }).setView([37.7749, -122.4194], 12);
         const tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxZoom: 20,
             attribution: '&copy; OpenStreetMap contributors'
         }).addTo(map);
 
         // Panes so routes draw above detections/markers
+        // routes go above detections so they are more visible
         map.createPane('detections');
-        map.getPane('detections').style.zIndex = 590; // below markerPane (600)
+        map.getPane('detections').style.zIndex = 590; 
         map.createPane('routes');
-        map.getPane('routes').style.zIndex = 650; // above markers/clusters
+        map.getPane('routes').style.zIndex = 650;
 
-        // Layers for dynamic content
-        const detectionsLayer = L.layerGroup().addTo(map); // individual detections (non-clustered)
+        const detectionsLayer = L.layerGroup().addTo(map); // individual detections
         let detMarkers = [];
         function styleForPothole(f) {
             const sev = String((f.properties?.severity ?? '')).toLowerCase();
@@ -82,14 +67,13 @@
             })
         }).addTo(map);
 
-        // Optional crew/vehicle location layer
+        // Redunadant, used for testing
         const vehicleLayer = L.geoJSON(null, {
             pointToLayer: (f, latlng) => L.circleMarker(latlng, {
                 radius: 6, color: '#222', fillColor: '#ffd54f', fillOpacity: 0.9, weight: 1
             }).bindPopup(`Crew: ${f.properties?.name || 'N/A'}`)
         }).addTo(map);
 
-        // (styleForPothole defined above)
         function updateDetectionMarkerSizes() {
             const z = map.getZoom ? map.getZoom() : 13;
             const scale = Math.pow(1.2, (z - 13));
@@ -126,7 +110,6 @@
          *  - { type: 'ping' } -> will reply with { type: 'pong' }
          ***************/
         window.addEventListener('message', (event) => {
-            // If you want, restrict origin: if (event.origin !== 'https://yourdomain.com') return;
             const msg = event.data || {};
             try {
                 switch (msg.type) {
@@ -209,12 +192,7 @@
         function isFeature(obj) { return obj && obj.type === 'Feature' && obj.geometry; }
         function isFeatureCollection(obj) { return obj && obj.type === 'FeatureCollection' && Array.isArray(obj.features); }
 
-        /***************
-         * Optional: Server-Sent Events (SSE) listener
-         * If you have a backend that streams events at /events,
-         * each message.data should be JSON like { type: 'addPotholes', ... } (same schema as postMessage).
-         * Enable by adding ?sse=1 to the iframe URL or setting window.ENABLE_SSE = true before load.
-         ***************/
+        // Server side events for real time updates
         const urlParams = new URLSearchParams(window.location.search);
         const ENABLE_SSE = urlParams.get('sse') === '1' || window.ENABLE_SSE === true;
 
@@ -225,13 +203,11 @@
                 es.onmessage = (ev) => {
                     try {
                         const msg = JSON.parse(ev.data);
-                        window.postMessage(msg, '*'); // reuse the same handler
-                        // If server announces new routes, fetch and update
+                        window.postMessage(msg, '*');
                         if (msg.type === 'routesUpdated' && msg.url) {
                             fetch(msg.url, { cache: 'no-store' })
                                 .then(r => r.text())
                                 .then(csv => {
-                                    // Expecting CSV with columns: route_id, latitude, longitude, route_order (at minimum)
                                     const rows = csv.split(/\r?\n/);
                                     const header = (rows.shift() || '').split(',').map(h => h.trim());
                                     const idx = {
@@ -250,7 +226,6 @@
                                         };
                                     }).filter(r => Number.isFinite(r.latitude) && Number.isFinite(r.longitude));
 
-                                    // Clear and redraw route layer
                                     routeLayer.clearLayers();
                                     const grouped = {};
                                     data.forEach(r => {
@@ -278,7 +253,6 @@
             }
         }
 
-        // Expose a minimal debug API (optional)
         window.debugAddRandom = function () {
             const center = map.getCenter();
             const jitter = () => (Math.random() - 0.5) * 0.01;
@@ -290,7 +264,6 @@
             potholeLayer.addData(f);
         };
 
-        // Detections (CSV) similar to routes.html
         function parseDetectionsCsv(text) {
             const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
             return parsed.data.map(r => ({
@@ -311,45 +284,26 @@
             try {
                 detMarkers = [];
                 detectionsLayer.clearLayers();
-                // Load simulated
-                const simResp = await fetch('/detections_simulated.csv', { cache: 'no-store' });
-                if (simResp.ok) {
-                    const txt = await simResp.text();
-                    const sim = parseDetectionsCsv(txt);
-                    const color = '#f43f5e';
-                    sim.forEach(d => {
-                        const baseRadius = 4 + Math.min(8, Math.max(0, (parseFloat(d.confidence || 0) || 0) * 6));
-                        const m = L.circleMarker([d.lat, d.lon], { radius: baseRadius, color, fillColor: color, fillOpacity: 0.35, pane: 'detections' }).addTo(detectionsLayer);
-                        const dur = isNaN(d.duration_s) ? '' : `${Number(d.duration_s).toFixed(0)}s`;
-                        const conf = d.confidence != null ? `Conf: ${Number(d.confidence).toFixed(2)}` : '';
-                        const img = d.image_url ? `<div class=\"mt-1\"><img src=\"${d.image_url}\" alt=\"detection\" class=\"max-w-[180px] rounded\"/></div>` : '';
-                        m.bindPopup(`<div><b>${d.cls || 'Pothole'}</b><br>${d.device_id || ''}<br>${d.start_timestamp || ''}${d.end_timestamp ? ' → ' + d.end_timestamp : ''}<br>${[dur, conf].filter(Boolean).join(' • ')}${img}</div>`);
-                        detMarkers.push({ marker: m, baseRadius });
-                    });
-                }
-                // Load real (optional)
-                const realResp = await fetch('/detections.csv', { cache: 'no-store' });
-                if (realResp.ok) {
-                    const txt = await realResp.text();
-                    const real = parseDetectionsCsv(txt);
-                    const color = '#10b981'; // teal for real
-                    real.forEach(d => {
-                        const baseRadius = 4 + Math.min(8, Math.max(0, (parseFloat(d.confidence || 0) || 0) * 6));
-                        const m = L.circleMarker([d.lat, d.lon], { radius: baseRadius, color, fillColor: color, fillOpacity: 0.35, pane: 'detections' }).addTo(detectionsLayer);
-                        const dur = isNaN(d.duration_s) ? '' : `${Number(d.duration_s).toFixed(0)}s`;
-                        const conf = d.confidence != null ? `Conf: ${Number(d.confidence).toFixed(2)}` : '';
-                        const img = d.image_url ? `<div class=\"mt-1\"><img src=\"${d.image_url}\" alt=\"detection\" class=\"max-w-[180px] rounded\"/></div>` : '';
-                        m.bindPopup(`<div><b>${d.cls || 'Pothole'}</b><br>${d.device_id || ''}<br>${d.start_timestamp || ''}${d.end_timestamp ? ' → ' + d.end_timestamp : ''}<br>${[dur, conf].filter(Boolean).join(' • ')}${img}</div>`);
-                        detMarkers.push({ marker: m, baseRadius });
-                    });
-                }
+                const resp = await fetch('/detections.csv', { cache: 'no-store' });
+                if (!resp.ok) return;
+                const txt = await resp.text();
+                const dets = parseDetectionsCsv(txt);
+                const color = '#f43f5e';
+                dets.forEach(d => {
+                    const baseRadius = 4 + Math.min(8, Math.max(0, (parseFloat(d.confidence || 0) || 0) * 6));
+                    const m = L.circleMarker([d.lat, d.lon], { radius: baseRadius, color, fillColor: color, fillOpacity: 0.35, pane: 'detections' }).addTo(detectionsLayer);
+                    const dur = isNaN(d.duration_s) ? '' : `${Number(d.duration_s).toFixed(0)}s`;
+                    const conf = d.confidence != null ? `Conf: ${Number(d.confidence).toFixed(2)}` : '';
+                    const img = d.image_url ? `<div class=\"mt-1\"><img src=\"${d.image_url}\" alt=\"detection\" class=\"max-w-[180px] rounded\"/></div>` : '';
+                    m.bindPopup(`<div><b>${d.cls || 'Pothole'}</b><br>${d.device_id || ''}<br>${d.start_timestamp || ''}${d.end_timestamp ? ' → ' + d.end_timestamp : ''}<br>${[dur, conf].filter(Boolean).join(' • ')}${img}</div>`);
+                    detMarkers.push({ marker: m, baseRadius });
+                });
                 updateDetectionMarkerSizes();
             } catch (e) {
                 console.warn('detections load failed', e);
             }
         }
 
-        // Initial detections load
         loadDetections();
     
         async function loadRoutesFromCsv(url) {
