@@ -28,7 +28,6 @@
 </head>
 
 <body class="bg-dark">
-    <!-- Navigation -->
     <nav class="fixed top-0 left-0 right-0 z-50 bg-dark/90 backdrop-blur-sm shadow-lg py-4">
         <div class="container mx-auto px-4 flex justify-between items-center">
             <div class="text-2xl font-bold text-white"><span class="gradient-text"><a href="./">C.R.A.T.E.R</a></span>
@@ -40,9 +39,7 @@
         </div>
     </nav>
 
-    <!-- Hero Section -->
     <div class="h-screen flex flex-col justify-center items-center text-center px-4 relative overflow-hidden">
-        <!-- Animated background elements -->
         <div class="absolute top-0 left-0 w-full h-full z-0">
             <div class="absolute top-20 left-10 w-32 h-32 bg-blue-500/10 rounded-full blur-3xl animate-pulse"></div>
             <div
@@ -77,14 +74,11 @@
         </div>
     </div>
 
-    <!-- Section 1 -->
     <section id="section1" class="section flex relative">
-        <!-- Progress bar -->
         <div class="absolute top-0 left-0 right-0 h-1.5 bg-gray-700 z-40">
             <div class="progress-bar h-full bg-gradient-to-r from-blue-500 to-indigo-500" id="progress1"></div>
         </div>
 
-        <!-- Text container (fixed) -->
         <div
             class="text-container w-1/2 h-full flex items-center justify-center p-12 bg-gradient-to-r from-dark to-slate-900">
             <div class="max-w-md">
@@ -120,7 +114,6 @@
             </div>
         </div>
 
-        <!-- Image container (scrolling) -->
         <div class="image-container w-1/2 h-full overflow-y-auto" id="imageContainer1">
             <div class="image-slide h-full">
                 <div class="w-full h-full bg-cover bg-center bg-gray-800 bg-img-pothole-1">
@@ -137,20 +130,17 @@
         </div>
     </section>
 
-    <!-- Section 2 -->
     <section id="section2" class="section flex relative">
         <div class="absolute top-0 left-0 right-0 h-1.5 bg-gray-700 z-40">
             <div class="progress-bar w-full h-full bg-gradient-to-r from-cyan-500 to-blue-500" id="progress2"></div>
         </div>
 
-        <!-- Image container (scrolling) -->
         <div class="image-container w-1/2 h-full overflow-y-auto" id="imageContainer2">
             <div class="image-slide h-full">
                 <iframe class="w-full h-full" src="/map"></iframe>
             </div>
         </div>
 
-        <!-- Text container (fixed) -->
         <div
             class="text-container w-1/2 h-full flex items-center justify-center p-12 bg-gradient-to-l from-dark to-slate-900">
             <div class="max-w-md">
@@ -192,7 +182,6 @@
         </div>
     </section>
 
-    <!-- Footer -->
     <footer class="bg-slate-900 text-white py-16 border-t border-slate-800">
         <div class="container mx-auto px-4">
             <div class="text-center">
@@ -214,7 +203,6 @@
         </div>
     </footer>
 
-    <!-- Mobile Navigation -->
     <div class="mobile-nav md:hidden">
         <a href="#section1" class="mobile-nav-btn">
             <i class="fas fa-search"></i>
@@ -240,7 +228,7 @@
             });
         }
 
-        // Handle seamless scrolling between sections
+        // Scrolling between sections
         function setupSectionScrolling() {
             const containers = [
                 'imageContainer1',
@@ -260,20 +248,16 @@
                 const container = document.getElementById(containerId);
                 let isScrolling = false;
 
-                // Handle wheel events for scrolling
                 container.addEventListener('wheel', (e) => {
                     if (isScrolling) return;
 
-                    // Check if we're at the bottom and scrolling down
                     const atBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 10;
                     const scrollingDown = e.deltaY > 0;
 
-                    // Check if we're at the top and scrolling up
                     const atTop = container.scrollTop <= 10;
                     const scrollingUp = e.deltaY < 0;
 
                     if (atBottom && scrollingDown) {
-                        // Scroll to next section if available
                         if (index < sections.length - 1) {
                             e.preventDefault();
                             isScrolling = true;
@@ -281,13 +265,11 @@
                                 behavior: 'smooth'
                             });
 
-                            // Reset flag after delay
                             setTimeout(() => {
                                 isScrolling = false;
                             }, 1000);
                         }
                     } else if (atTop && scrollingUp) {
-                        // Scroll to previous section if available
                         if (index > 0) {
                             e.preventDefault();
                             isScrolling = true;
@@ -295,7 +277,6 @@
                                 behavior: 'smooth'
                             });
 
-                            // Reset flag after delay
                             setTimeout(() => {
                                 isScrolling = false;
                             }, 1000);
@@ -303,7 +284,6 @@
                     }
                 });
 
-                // Handle touch events for mobile
                 let touchStartY = 0;
 
                 container.addEventListener('touchstart', (e) => {
@@ -317,9 +297,8 @@
                     }
 
                     const touchY = e.touches[0].clientY;
-                    const deltaY = touchStartY - touchY; // positive if scrolling down
+                    const deltaY = touchStartY - touchY;
 
-                    // Check scroll position
                     const atBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 10;
                     const scrollingDown = deltaY > 0;
 
@@ -327,7 +306,6 @@
                     const scrollingUp = deltaY < 0;
 
                     if (atBottom && scrollingDown) {
-                        // Scroll to next section if available
                         if (index < sections.length - 1) {
                             e.preventDefault();
                             isScrolling = true;
@@ -335,13 +313,11 @@
                                 behavior: 'smooth'
                             });
 
-                            // Reset flag after delay
                             setTimeout(() => {
                                 isScrolling = false;
                             }, 1000);
                         }
                     } else if (atTop && scrollingUp) {
-                        // Scroll to previous section if available
                         if (index > 0) {
                             e.preventDefault();
                             isScrolling = true;
@@ -349,7 +325,6 @@
                                 behavior: 'smooth'
                             });
 
-                            // Reset flag after delay
                             setTimeout(() => {
                                 isScrolling = false;
                             }, 1000);
@@ -368,7 +343,6 @@
 
             setupSectionScrolling();
 
-            // Smooth scrolling for navigation links
             document.querySelectorAll('a[href^="#"]').forEach(anchor => {
                 anchor.addEventListener('click', function (e) {
                     e.preventDefault();
@@ -376,7 +350,6 @@
                         behavior: 'smooth'
                     });
 
-                    // Highlight active mobile nav item
                     if (window.innerWidth < 768) {
                         document.querySelectorAll('.mobile-nav-btn').forEach(btn => {
                             btn.classList.remove('active');
@@ -386,7 +359,6 @@
                 });
             });
 
-            // Set default active mobile nav item
             document.querySelector('.mobile-nav-btn').classList.add('active');
         });
         const button = document.getElementById("emailButton");
@@ -394,10 +366,8 @@
 
         button.addEventListener("click", () => {
 
-            // Show popup
             popup.style.visibility = "visible";
 
-            // Hide popup after 2 seconds
             setTimeout(() => {
                 popup.style.visibility = "hidden";
             }, 2000);

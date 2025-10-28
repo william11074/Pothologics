@@ -15,54 +15,7 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
     <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 
-    <!-- MarkerCluster (optional but useful for many points) -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
-    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
-    <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js">
-        async function loadRoutesFromCsv(url) {
-            try {
-                const resp = await fetch(url, { cache: 'no-store' });
-                if (!resp.ok) throw new Error('Fetch failed');
-                const csv = await resp.text();
-                const rows = csv.split(/\r?\n/);
-                const header = (rows.shift() || '').split(',').map(h => h.trim());
-                const idx = {
-                    route_id: header.findIndex(h => h.toLowerCase() === 'route_id'),
-                    lat: header.findIndex(h => h.toLowerCase() === 'latitude' || h.toLowerCase() === 'lat'),
-                    lon: header.findIndex(h => h.toLowerCase() === 'longitude' || h.toLowerCase() === 'lon'),
-                    order: header.findIndex(h => h.toLowerCase() === 'route_order' || h.toLowerCase() === 'order')
-                };
-                const data = rows.filter(Boolean).map(line => {
-                    const parts = line.split(',');
-                    return {
-                        route_id: parts[idx.route_id],
-                        latitude: parseFloat(parts[idx.lat]),
-                        longitude: parseFloat(parts[idx.lon]),
-                        route_order: parseInt(parts[idx.order] || '0', 10)
-                    };
-                }).filter(r => Number.isFinite(r.latitude) && Number.isFinite(r.longitude));
-
-                routeLayer.clearLayers();
-                const grouped = {};
-                data.forEach(r => { (grouped[r.route_id] ||= []).push(r); });
-                Object.keys(grouped).sort((a, b) => Number(a) - Number(b)).forEach((rid, i) => {
-                    const pts = grouped[rid].sort((a, b) => a.route_order - b.route_order);
-                    const latlngs = pts.map(p => [p.latitude, p.longitude]);
-                    if (latlngs.length) {
-                        L.polyline(latlngs, { color: ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'][i % 4], weight: 5, opacity: 0.95, pane: 'routes' }).addTo(routeLayer);
-                    }
-                });
-                const b = routeLayer.getBounds();
-                if (b.isValid()) map.fitBounds(b, { padding: [20, 20] });
-            } catch (e) {
-                console.warn('Failed to load CSV', url, e);
-            }
-        }
-
-        (function initCsvLoad() {
-            const url = new URLSearchParams(window.location.search).get('csv') || '/work_orders.csv';
-            loadRoutesFromCsv(url);
-        })();</script>
+    
 
     <style>
         html,
@@ -109,7 +62,8 @@
         map.getPane('routes').style.zIndex = 650; // above markers/clusters
 
         // Layers for dynamic content
-        const potholeCluster = (L.markerClusterGroup ? L.markerClusterGroup({ disableClusteringAtZoom: 17 }) : L.layerGroup());
+        const detectionsLayer = L.layerGroup().addTo(map); // individual detections (non-clustered)
+        let detMarkers = [];
         function styleForPothole(f) {
             const sev = String((f.properties?.severity ?? '')).toLowerCase();
             const color =
@@ -118,11 +72,6 @@
                 sev === 'low' ? '#388e3c' : '#5e35b1';
             return { radius: 5, color, weight: 1.5, fillColor: color, fillOpacity: 0.7 };
         }
-        const potholeLayer = L.geoJSON(null, {
-            pointToLayer: (f, latlng) => L.circleMarker(latlng, { ...styleForPothole(f), pane: 'detections' }),
-            onEachFeature: (f, layer) => layer.bindPopup(popupForPothole(f))
-        });
-        potholeCluster.addLayer(potholeLayer).addTo(map);
 
         const routeLayer = L.geoJSON(null, {
             pane: 'routes',
@@ -141,6 +90,15 @@
         }).addTo(map);
 
         // (styleForPothole defined above)
+        function updateDetectionMarkerSizes() {
+            const z = map.getZoom ? map.getZoom() : 13;
+            const scale = Math.pow(1.2, (z - 13));
+            detMarkers.forEach(({ marker, baseRadius }) => {
+                const r = Math.max(2, Math.min(12, baseRadius * scale));
+                try { marker.setStyle({ radius: r }); } catch (e) {}
+            });
+        }
+        map.on('zoomend', updateDetectionMarkerSizes);
 
         function popupForPothole(f) {
             const p = f.properties || {};
@@ -332,43 +290,67 @@
             potholeLayer.addData(f);
         };
 
-        const CSV_URL = './detections_simulated.csv';   // path to your CSV file
-        const LAT_FIELD = 'lat';
-        const LON_FIELD = 'lon';
-        // Extra columns to show extra information
-        const EXTRA_FIELDS = ['id', 'severity', 'status', 'reported_at'];
-
-        function csvRowsToFeatureCollection(rows) {
-            const feats = [];
-            for (const row of rows) {
-                const lat = parseFloat(row[LAT_FIELD]);
-                const lon = parseFloat(row[LON_FIELD]);
-                if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-                feats.push({
-                    type: 'Feature',
-                    geometry: { type: 'Point', coordinates: [lon, lat] },
-                    properties: Object.fromEntries(
-                        Object.entries(row).filter(([k, v]) => v !== '' && v != null && (k === LAT_FIELD || k === LON_FIELD || EXTRA_FIELDS.includes(k)))
-                    )
-                });
-            }
-            return { type: 'FeatureCollection', features: feats };
+        // Detections (CSV) similar to routes.html
+        function parseDetectionsCsv(text) {
+            const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
+            return parsed.data.map(r => ({
+                detection_id: r.detection_id || r.id,
+                device_id: r.device_id,
+                cls: r.cls || r.class || 'Pothole',
+                start_timestamp: r.start_timestamp || r.timestamp || r.start,
+                end_timestamp: r.end_timestamp || r.end,
+                duration_s: Number(r.duration_s || r.duration || 0),
+                lat: parseFloat(r.lat || r.latitude),
+                lon: parseFloat(r.lon || r.longitude),
+                confidence: r.confidence_peak || r.confidence,
+                image_url: r.image_url || r.image,
+            })).filter(d => Number.isFinite(d.lat) && Number.isFinite(d.lon));
         }
 
-        // Load CSV and add to map
-        fetch(CSV_URL)
-            .then(r => r.text())
-            .then(text => new Promise(res => Papa.parse(text, { header: true, skipEmptyLines: true, complete: res })))
-            .then(result => {
-                const fc = csvRowsToFeatureCollection(result.data);
-                potholeLayer.clearLayers();
-                potholeLayer.addData(fc);
+        async function loadDetections() {
+            try {
+                detMarkers = [];
+                detectionsLayer.clearLayers();
+                // Load simulated
+                const simResp = await fetch('/detections_simulated.csv', { cache: 'no-store' });
+                if (simResp.ok) {
+                    const txt = await simResp.text();
+                    const sim = parseDetectionsCsv(txt);
+                    const color = '#f43f5e';
+                    sim.forEach(d => {
+                        const baseRadius = 4 + Math.min(8, Math.max(0, (parseFloat(d.confidence || 0) || 0) * 6));
+                        const m = L.circleMarker([d.lat, d.lon], { radius: baseRadius, color, fillColor: color, fillOpacity: 0.35, pane: 'detections' }).addTo(detectionsLayer);
+                        const dur = isNaN(d.duration_s) ? '' : `${Number(d.duration_s).toFixed(0)}s`;
+                        const conf = d.confidence != null ? `Conf: ${Number(d.confidence).toFixed(2)}` : '';
+                        const img = d.image_url ? `<div class=\"mt-1\"><img src=\"${d.image_url}\" alt=\"detection\" class=\"max-w-[180px] rounded\"/></div>` : '';
+                        m.bindPopup(`<div><b>${d.cls || 'Pothole'}</b><br>${d.device_id || ''}<br>${d.start_timestamp || ''}${d.end_timestamp ? ' → ' + d.end_timestamp : ''}<br>${[dur, conf].filter(Boolean).join(' • ')}${img}</div>`);
+                        detMarkers.push({ marker: m, baseRadius });
+                    });
+                }
+                // Load real (optional)
+                const realResp = await fetch('/detections.csv', { cache: 'no-store' });
+                if (realResp.ok) {
+                    const txt = await realResp.text();
+                    const real = parseDetectionsCsv(txt);
+                    const color = '#10b981'; // teal for real
+                    real.forEach(d => {
+                        const baseRadius = 4 + Math.min(8, Math.max(0, (parseFloat(d.confidence || 0) || 0) * 6));
+                        const m = L.circleMarker([d.lat, d.lon], { radius: baseRadius, color, fillColor: color, fillOpacity: 0.35, pane: 'detections' }).addTo(detectionsLayer);
+                        const dur = isNaN(d.duration_s) ? '' : `${Number(d.duration_s).toFixed(0)}s`;
+                        const conf = d.confidence != null ? `Conf: ${Number(d.confidence).toFixed(2)}` : '';
+                        const img = d.image_url ? `<div class=\"mt-1\"><img src=\"${d.image_url}\" alt=\"detection\" class=\"max-w-[180px] rounded\"/></div>` : '';
+                        m.bindPopup(`<div><b>${d.cls || 'Pothole'}</b><br>${d.device_id || ''}<br>${d.start_timestamp || ''}${d.end_timestamp ? ' → ' + d.end_timestamp : ''}<br>${[dur, conf].filter(Boolean).join(' • ')}${img}</div>`);
+                        detMarkers.push({ marker: m, baseRadius });
+                    });
+                }
+                updateDetectionMarkerSizes();
+            } catch (e) {
+                console.warn('detections load failed', e);
+            }
+        }
 
-                // Fit to data
-                const b = potholeCluster.getBounds();
-                if (b.isValid()) map.fitBounds(b, { padding: [20, 20] });
-            })
-            .catch(err => console.error('Failed to load potholes CSV:', err));
+        // Initial detections load
+        loadDetections();
     
         async function loadRoutesFromCsv(url) {
             try {

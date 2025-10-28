@@ -3,10 +3,12 @@ import numpy as np
 import uuid
 import datetime
 
-def generate_pothole_data(num_points=500, random_seed=42):
+# generates a simulated pothole dataset with clusters and scattered points
+# for testing purposes
+def generate_pothole_data(num_points=500, random_seed=41):
     np.random.seed(random_seed)
     
-    # Generate randomly scattered points
+    # Scattered points around a center coordinate
     scattered_lat = np.random.uniform(38.70, 38.80, int(num_points * 0.6))
     scattered_lon = np.random.uniform(-122.50, -122.35, int(num_points * 0.6))
     
@@ -20,7 +22,6 @@ def generate_pothole_data(num_points=500, random_seed=42):
     
     clustered_points = []
     for center in cluster_centers:
-        # Create a cluster with spread
         lat, lon = center
         cluster_size = int(num_points * 0.1)
         cluster_lat = np.random.normal(lat, 0.005, cluster_size)
@@ -30,7 +31,7 @@ def generate_pothole_data(num_points=500, random_seed=42):
     all_lat = np.concatenate([scattered_lat, [p[0] for p in clustered_points]])
     all_lon = np.concatenate([scattered_lon, [p[1] for p in clustered_points]])
     
-    # Create csv file
+    # Generate csv file
     df = pd.DataFrame({
         'latitude': all_lat,
         'longitude': all_lon,
@@ -40,19 +41,17 @@ def generate_pothole_data(num_points=500, random_seed=42):
     
     return df.sample(frac=1).reset_index(drop=True)
 
-# Generate and save the dataset
 if __name__ == "__main__":
     pothole_data = generate_pothole_data(500)
     pothole_data.to_csv('pothole_dataset.csv', index=False)
     print("Generated dataset with shape:", pothole_data.shape)
 
-    # Also generate a detections-style CSV matching server schema (without accuracy)
-    # Columns: detection_id,device_id,cls,start_timestamp,end_timestamp,duration_s,lat,lon,confidence_peak,image_url
+    # Generate a csv file that matches the detection log format in Supabase
     device_id = 'simulator-1'
     events = []
     now = datetime.datetime.utcnow()
 
-    # Use first N points to simulate events
+    # Generate n points (right now its 300)
     for i, row in pothole_data.head(300).iterrows():
         start = now + datetime.timedelta(seconds=int(np.random.randint(0, 600)))
         duration = float(np.random.randint(2, 11))
