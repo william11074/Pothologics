@@ -1,5 +1,5 @@
 /* CRATER Service Worker */
-const VERSION = 'v1';
+const VERSION = 'v2';
 const APP_SHELL = [
   '/',
   '/routes',
@@ -35,6 +35,18 @@ self.addEventListener('fetch', (event) => {
   // Bypass non-GET and SSE
   if (request.method !== 'GET' || url.pathname === '/events') return;
 
+  // Network-first for CSV (avoid stale data like work_orders.csv)
+  if (url.pathname.endsWith('.csv')) {
+    event.respondWith(
+      fetch(request).then((resp) => {
+        const copy = resp.clone();
+        caches.open(RUNTIME_CACHE).then((c) => c.put(request, copy));
+        return resp;
+      }).catch(() => caches.match(request))
+    );
+    return;
+  }
+
   // Network-first for HTML navigations
   if (isHTML(request)) {
     event.respondWith(
@@ -61,4 +73,3 @@ self.addEventListener('fetch', (event) => {
     );
   }
 });
-
