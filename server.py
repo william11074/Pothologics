@@ -349,6 +349,50 @@ def api_recluster():
     except Exception as e:
         return add_cors(jsonify({ 'error': str(e) })), 400
 
+# =========================
+# Detections source toggle (real vs simulated)
+# =========================
+DETECTIONS_SOURCE_FILE = Path('detections_source.json')
+
+def _load_detections_source() -> str:
+    try:
+        if DETECTIONS_SOURCE_FILE.exists():
+            with DETECTIONS_SOURCE_FILE.open('r', encoding='utf-8') as f:
+                data = json.load(f)
+                v = str((data or {}).get('source') or '').lower()
+                if v in ('real','simulated'):
+                    return v
+    except Exception:
+        pass
+    # default
+    return str(os.getenv('DETECTIONS_SOURCE', 'simulated')).lower()
+
+def _save_detections_source(source: str) -> None:
+    try:
+        with DETECTIONS_SOURCE_FILE.open('w', encoding='utf-8') as f:
+            json.dump({'source': source}, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+@app.route('/api/detections/source', methods=['GET','POST','OPTIONS'])
+def api_detections_source():
+    if request.method == 'OPTIONS':
+        return add_cors(make_response("", 204))
+    if request.method == 'GET':
+        return add_cors(jsonify({ 'source': _load_detections_source() }))
+    try:
+        payload = request.get_json(force=True) or {}
+        src = str(payload.get('source') or '').lower()
+        if src not in ('real','simulated'):
+            return add_cors(jsonify({ 'error': 'source must be "real" or "simulated"' })), 400
+        _save_detections_source(src)
+        # Trigger a background rebuild of work orders from the selected source
+        csv_path = 'detections.csv' if src == 'real' else 'detections_simulated.csv'
+        schedule_recluster_for(csv_path, delay_s=0.1)
+        return add_cors(jsonify({ 'ok': True, 'source': src, 'recluster_scheduled': True, 'csv': csv_path }))
+    except Exception as e:
+        return add_cors(jsonify({ 'error': str(e) })), 400
+
 @app.route('/api/routes/meta', methods=['GET'])
 def api_routes_meta():
     """Return metadata about the current work_orders (e.g., source CSV)."""
@@ -776,6 +820,15 @@ def serve_detections_simulated_csv():
     out = Path("detections_simulated.csv")
     if not out.exists():
         return add_cors(jsonify({"error": "detections_simulated.csv not found"})), 404
+    return add_cors(send_from_directory(directory=str(out.parent), path=out.name, as_attachment=False))
+
+@app.route("/detections.csv", methods=["GET"])
+def serve_active_detections_csv():
+    """Serve the active detections CSV based on the configured source (real or simulated)."""
+    src = _load_detections_source()
+    out = Path('detections.csv') if src == 'real' else Path('detections_simulated.csv')
+    if not out.exists():
+        return add_cors(jsonify({"error": f"{out.name} not found", "source": src})), 404
     return add_cors(send_from_directory(directory=str(out.parent), path=out.name, as_attachment=False))
 
 @app.route("/api/detections", methods=["GET"])

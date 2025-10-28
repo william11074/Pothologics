@@ -1,16 +1,46 @@
 import pandas as pd
 import numpy as np
 import json
+import os
 from pathlib import Path
 from sklearn.cluster import DBSCAN
 from scipy.spatial.distance import cdist
 from shapely.geometry import MultiPoint
 import datetime
 
+def _resolve_default_csv(explicit_path: str | None = None) -> str:
+    """Resolve which detections CSV to use automatically.
+    Priority: explicit_path > detections_source.json > env DETECTIONS_SOURCE > whichever exists.
+    """
+    if explicit_path:
+        return str(explicit_path)
+    # Toggle file
+    try:
+        src_file = Path('detections_source.json')
+        if src_file.exists():
+            with src_file.open('r', encoding='utf-8') as f:
+                data = json.load(f) or {}
+                src = str(data.get('source') or '').lower()
+                if src == 'real':
+                    return 'detections.csv'
+                if src == 'simulated':
+                    return 'detections_simulated.csv'
+    except Exception:
+        pass
+    # Env fallback
+    src = str(os.getenv('DETECTIONS_SOURCE', 'simulated')).lower()
+    candidate = 'detections.csv' if src == 'real' else 'detections_simulated.csv'
+    if Path(candidate).exists():
+        return candidate
+    # Last resort
+    return 'detections.csv' if Path('detections.csv').exists() else 'detections_simulated.csv'
+
+
 class PotholeRepairOptimizer:
-    # filepath will be changed to csv file with real detection once in production
-    def __init__(self, filepath="./detections_simulated.csv"):
-        self.df = pd.read_csv(filepath)
+    # filepath may be None for auto-selection
+    def __init__(self, filepath: str | None = None):
+        csv_path = _resolve_default_csv(filepath)
+        self.df = pd.read_csv(csv_path)
         self.cluster_routes = {}
         self.route_stats = {}
         self.cluster_polygons = {}
@@ -211,7 +241,7 @@ class PotholeRepairOptimizer:
 # generate each cluster and optimize repair routes
 # should be run every time a new pothole is detected or a route is deleted
 if __name__ == "__main__":
-    optimizer = PotholeRepairOptimizer("./detections_simulated.csv")
+    optimizer = PotholeRepairOptimizer(None)
     
     # cluster potholes
     optimizer.cluster_potholes()
