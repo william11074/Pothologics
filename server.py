@@ -1104,7 +1104,12 @@ def serve_work_orders_csv():
 # PWA assets served at root scope for wide SW/manifest scope
 @app.route('/manifest.webmanifest')
 def pwa_manifest():
-    return add_cors(send_from_directory(directory='static', path='manifest.webmanifest', as_attachment=False))
+    resp = send_from_directory(directory='static', path='manifest.webmanifest', as_attachment=False)
+    try:
+        resp.headers['Content-Type'] = 'application/manifest+json'
+    except Exception:
+        pass
+    return add_cors(resp)
 
 @app.route('/sw.js')
 def pwa_sw():
@@ -1112,6 +1117,40 @@ def pwa_sw():
     # Ensure correct MIME
     resp.headers['Content-Type'] = 'application/javascript'
     return add_cors(resp)
+
+@app.route('/static/icons/icon-192.png')
+def pwa_icon_192():
+    p = Path('static/icons/icon-192.png')
+    if p.exists():
+        return add_cors(send_from_directory(directory='static/icons', path='icon-192.png', as_attachment=False))
+    # Generate a simple placeholder icon
+    try:
+        import io as _io
+        from PIL import Image as _Image, ImageDraw as _ImageDraw
+        img = _Image.new('RGBA', (192, 192), (15, 23, 42, 255))
+        d = _ImageDraw.Draw(img)
+        d.ellipse((24, 24, 168, 168), fill=(59,130,246,255))
+        buf = _io.BytesIO(); img.save(buf, format='PNG'); buf.seek(0)
+        return add_cors(send_file(buf, mimetype='image/png'))
+    except Exception:
+        return add_cors(jsonify({ 'error': 'icon not available' })), 404
+
+@app.route('/static/icons/icon-512.png')
+def pwa_icon_512():
+    p = Path('static/icons/icon-512.png')
+    if p.exists():
+        return add_cors(send_from_directory(directory='static/icons', path='icon-512.png', as_attachment=False))
+    # Generate a simple placeholder icon
+    try:
+        import io as _io
+        from PIL import Image as _Image, ImageDraw as _ImageDraw
+        img = _Image.new('RGBA', (512, 512), (15, 23, 42, 255))
+        d = _ImageDraw.Draw(img)
+        d.ellipse((64, 64, 448, 448), fill=(59,130,246,255))
+        buf = _io.BytesIO(); img.save(buf, format='PNG'); buf.seek(0)
+        return add_cors(send_file(buf, mimetype='image/png'))
+    except Exception:
+        return add_cors(jsonify({ 'error': 'icon not available' })), 404
 
 @app.route("/detections_simulated.csv", methods=["GET"])
 def serve_detections_simulated_csv():

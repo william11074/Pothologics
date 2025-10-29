@@ -11,6 +11,9 @@
     <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
     <link rel="manifest" href="/manifest.webmanifest">
     <meta name="theme-color" content="#3b82f6">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
 
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
@@ -355,7 +358,15 @@
         (function initCsvLoad() {
             const url = new URLSearchParams(window.location.search).get('csv') || '/work_orders.csv';
             loadRoutesFromCsv(url);
-        })();</script>
+        })();
+    </script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').catch(() => {});
+        });
+      }
+    </script>
 </body>
 
 </html>
