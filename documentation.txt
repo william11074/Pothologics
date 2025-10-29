@@ -5,6 +5,7 @@ pipreqs . [--force]
 ./venv/Scripts/activate 
 pip install -r requirements.txt
 python server.py
+lt --port 5000
 
 Things needed to be fixed:
 routes.html does not implement map.html directly so the code for displaying data on the leaflet map is written twice
@@ -44,3 +45,5 @@ vercel.json [used to host server on vercel]
 
 Note:
 AI assistance was used to create frontend design
+
+https://localtunnel.lt/mytunnelpassword
