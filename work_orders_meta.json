@@ -1,5 +1,5 @@
 {
-  "source_csv": "detections.csv",
-  "source_path": "detections.csv",
-  "updated_at": "2025-10-29T00:12:41.219078Z"
+  "source_csv": "detections_simulated.csv",
+  "source_path": "detections_simulated.csv",
+  "updated_at": "2025-10-29T15:40:28.606643Z"
 }
