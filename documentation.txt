@@ -40,5 +40,7 @@ server.py [main flask server]
 work_orders_meta.json [metadata for work order generation]
 work_orders.csv [generated work orders from cluster.py]
 
+vercel.json [used to host server on vercel]
+
 Note:
 AI assistance was used to create frontend design
