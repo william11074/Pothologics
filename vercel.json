@@ -12,12 +12,12 @@
     { "source": "/sw.js", "destination": "/static/sw.js" },
     { "source": "/static/:path*", "destination": "/static/:path*" },
 
-    { "source": "/api/:path*", "destination": "https://YOUR-BACKEND-HOST/api/:path*" },
-    { "source": "/events", "destination": "https://YOUR-BACKEND-HOST/events" },
-    { "source": "/work_orders.csv", "destination": "https://YOUR-BACKEND-HOST/work_orders.csv" },
-    { "source": "/detections.csv", "destination": "https://YOUR-BACKEND-HOST/detections.csv" },
-    { "source": "/detections_simulated.csv", "destination": "https://YOUR-BACKEND-HOST/detections_simulated.csv" },
-    { "source": "/route_summary.csv", "destination": "https://YOUR-BACKEND-HOST/route_summary.csv" }
+    { "source": "/api/:path*", "destination": "https://crater-app-6z9g/api/:path*" },
+    { "source": "/events", "destination": "https://crater-app-6z9g/events" },
+    { "source": "/work_orders.csv", "destination": "https://crater-app-6z9g/work_orders.csv" },
+    { "source": "/detections.csv", "destination": "https://crater-app-6z9g/detections.csv" },
+    { "source": "/detections_simulated.csv", "destination": "https://crater-app-6z9g/detections_simulated.csv" },
+    { "source": "/route_summary.csv", "destination": "https://crater-app-6z9g/route_summary.csv" }
   ],
   "headers": [
     {
