@@ -9,10 +9,8 @@ from scipy.spatial.distance import cdist
 from shapely.geometry import MultiPoint
 import datetime
 
+# Decide whether to use simulated data or real data (for backtesting purposes)
 def _resolve_default_csv(explicit_path: Optional[str] = None) -> str:
-    """Resolve which detections CSV to use automatically.
-    Priority: explicit_path > detections_source.json > env DETECTIONS_SOURCE > whichever exists.
-    """
     if explicit_path:
         return str(explicit_path)
     # Toggle file
@@ -28,12 +26,10 @@ def _resolve_default_csv(explicit_path: Optional[str] = None) -> str:
                     return 'detections_simulated.csv'
     except Exception:
         pass
-    # Env fallback
     src = str(os.getenv('DETECTIONS_SOURCE', 'simulated')).lower()
     candidate = 'detections.csv' if src == 'real' else 'detections_simulated.csv'
     if Path(candidate).exists():
         return candidate
-    # Last resort
     if Path('detections.csv').exists():
         return 'detections.csv'
     return 'detections_simulated.csv'
