@@ -424,7 +424,6 @@ def schedule_recluster_for(csv_path: str, delay_s: float = 1.0):
     threading.Thread(target=worker, daemon=True).start()
 
 def schedule_recluster(delay_s: float = 1.0):
-    """Compatibility wrapper: schedule recluster for detections.csv."""
     schedule_recluster_for("detections.csv", delay_s)
 
 @app.route('/api/recluster', methods=['POST','OPTIONS'])
@@ -438,9 +437,7 @@ def api_recluster():
     except Exception as e:
         return add_cors(jsonify({ 'error': str(e) })), 400
 
-# =========================
-# Detections source toggle (real vs simulated)
-# =========================
+# Toggle detections between real and simulated
 DETECTIONS_SOURCE_FILE = Path('detections_source.json')
 
 def _load_detections_source() -> str:
@@ -453,7 +450,6 @@ def _load_detections_source() -> str:
                     return v
     except Exception:
         pass
-    # default
     return str(os.getenv('DETECTIONS_SOURCE', 'simulated')).lower()
 
 def _save_detections_source(source: str) -> None:
@@ -484,7 +480,6 @@ def api_detections_source():
 
 @app.route('/api/routes/meta', methods=['GET'])
 def api_routes_meta():
-    """Return metadata about the current work_orders (e.g., source CSV)."""
     meta_path = Path('work_orders_meta.json')
     if meta_path.exists():
         try:
@@ -495,9 +490,7 @@ def api_routes_meta():
     # Fallback: unknown
     return add_cors(jsonify({ 'source_csv': None, 'source_path': None, 'updated_at': None }))
 
-# =========================
-# Mark route as fixed (remove its potholes and rebuild)
-# =========================
+# Mark route as fixed
 def _haversine_km(lat1, lon1, lat2, lon2):
     from math import radians, sin, cos, asin, sqrt
     R = 6371.0088
@@ -549,7 +542,6 @@ def _remove_points_from_csv(csv_path: Path, points: list[tuple[float,float]], to
     return removed
 
 def supabase_delete_near_points(points: list[tuple[float,float]], tol_m: float) -> int:
-    """Delete Supabase detections within tolerance meters of any point. Returns count deleted (best-effort)."""
     if not supabase_enabled() or not points:
         return 0
     try:
@@ -591,7 +583,6 @@ def supabase_delete_near_points(points: list[tuple[float,float]], tol_m: float) 
         return 0
 
 def _remove_ids_from_csv(csv_path: Path, ids: list[str]) -> int:
-    """Remove rows whose detection_id is in ids from a CSV. Returns number removed."""
     if not csv_path.exists() or not ids:
         return 0
     ids_set = set(map(str, ids))
@@ -626,7 +617,6 @@ def _remove_ids_from_csv(csv_path: Path, ids: list[str]) -> int:
     return removed
 
 def supabase_delete_ids(ids: list[str]) -> int:
-    """Delete detections in Supabase by detection_id. Returns number requested (best-effort)."""
     if not supabase_enabled() or not ids:
         return 0
     try:
@@ -704,9 +694,7 @@ def api_fix_route():
     except Exception as e:
         return add_cors(jsonify({ 'error': str(e) })), 400
 
-# =========================
-# Mark detections (potholes) as filled
-# =========================
+# Mark potholes as fixed
 @app.route('/api/detections/fix', methods=['POST','OPTIONS'])
 def api_fix_detections():
     if request.method == 'OPTIONS':
@@ -747,11 +735,8 @@ def api_fix_detections():
     except Exception as e:
         return add_cors(jsonify({ 'error': str(e) })), 400
 
-# =========================
-# CORS helpers
-# =========================
+# CORS helper
 def add_cors(resp):
-    """Add permissive CORS headers (handy for local/mobile clients)."""
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Device-ID"
     resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
@@ -759,16 +744,12 @@ def add_cors(resp):
 
 @app.after_request
 def apply_cors(resp):
-    """Apply CORS headers to every response."""
     return add_cors(resp)
 
-# =========================
-# Misc routes
-# =========================
+# Other routes for testing and deployement
 @app.route("/ping")
 @app.route("/api/ping")
 def ping():
-    """Lightweight liveness + YOLO status."""
     info = {"ok": True, "yolo": YOLO_OK}
     try:
         if YOLO_OK and hasattr(MODEL, 'names'):
@@ -778,9 +759,7 @@ def ping():
         pass
     return add_cors(jsonify(info))
 
-# =========================
-# Route color persistence
-# =========================
+# Route coloring 
 ROUTE_COLORS_PATH = Path("route_colors.json")
 ROUTE_COLORS_LOCK = threading.Lock()
 
@@ -863,21 +842,11 @@ def reset_route_colors():
 
 @app.route("/")
 def root():
-    """Home page (renders templates/index.html)."""
     return render_template("index.html")
 
-# =========================
-# Detection endpoint (per frame)
-# =========================
+# Detection code
 @app.route("/api/detect", methods=["POST", "OPTIONS"])
 def api_detect():
-    """
-    Accept a single image frame:
-    - run YOLO with ByteTrack for track IDs
-    - update in-memory tracks per device
-    - finalize + log a track only after it's missing for MAX_MISSED_FRAMES
-    - return detections for overlay (bbox/conf/cls)
-    """
     if request.method == "OPTIONS":
         return add_cors(make_response("", 204))
 
@@ -919,7 +888,6 @@ def api_detect():
         matched_track_ids = set()
 
         def crop_bytes(bbox):
-            """Return JPEG bytes for the given XYXY bbox; fallback to original bytes on error."""
             try:
                 x1, y1, x2, y2 = map(int, bbox)
                 c = img.crop((x1, y1, x2, y2))
@@ -1013,15 +981,9 @@ def api_detect():
         # Return error in JSON; logs/tracebacks can be added here if desired
         return add_cors(jsonify({"error": str(e)})), 500
 
-# =========================
-# Simple JSON logger (optional)
-# =========================
+# Logging detected potholes
 @app.route("/api/log", methods=["POST", "OPTIONS"])
 def api_log():
-    """
-    Accepts a JSON payload and appends it to local CSV, mirrors to Supabase.
-    Useful for quickly validating table connectivity without running YOLO.
-    """
     if request.method == "OPTIONS":
         return add_cors(make_response("", 204))
     try:
@@ -1072,9 +1034,7 @@ def api_log():
     except Exception as e:
         return add_cors(jsonify({"error": str(e)})), 400
 
-# =========================
-# Convenience routes
-# =========================
+# Other routes
 @app.route("/detect.html")
 @app.route("/detect")
 def serve_detect():
@@ -1084,18 +1044,15 @@ def serve_detect():
 @app.route("/routes")
 @app.route("/routes.html")
 def serve_routes():
-    """Demo page that can subscribe to SSE route updates (templates/routes.html)."""
     return render_template("routes.html")
 
 @app.route("/map")
 @app.route("/map.html")
 def serve_map():
-    """Lightweight embedded map view (templates/map.html)."""
     return render_template("map.html")
 
 @app.route("/work_orders.csv", methods=["GET"])
 def serve_work_orders_csv():
-    """Serve work_orders.csv from the project root if it exists."""
     out = Path("work_orders.csv")
     if not out.exists():
         return add_cors(jsonify({"error": "work_orders.csv not found"})), 404
@@ -1169,7 +1126,6 @@ def serve_route_summary_csv():
 
 @app.route("/detections.csv", methods=["GET"])
 def serve_active_detections_csv():
-    """Serve the active detections CSV based on the configured source (real or simulated)."""
     src = _load_detections_source()
     # For real data and Supabase, stream live export to avoid stale local CSV
     if src == 'real' and supabase_enabled():
@@ -1198,10 +1154,6 @@ def serve_active_detections_csv():
 
 @app.route("/api/detections", methods=["GET"])
 def list_detections():
-    """
-    Return the last N rows of the local CSV (debugging convenience).
-    Useful if Supabase is down or for quick inspection.
-    """
     out = Path("detections.csv")
     if not out.exists():
         return add_cors(jsonify({"rows": [], "headers": ["timestamp", "lat", "lon", "confidence_peak", "device_id", "image_url"]}))
@@ -1218,7 +1170,6 @@ def list_detections():
 
 @app.route("/download/detections.csv", methods=["GET"])
 def download_detections():
-    """Download the local CSV (creates a header-only CSV if none exists yet)."""
     out = Path("detections.csv")
     if not out.exists():
         mem = io.StringIO(); writer = csv.writer(mem)
@@ -1233,9 +1184,7 @@ def _active_source_is_real() -> bool:
     except Exception:
         return False
 
-# =========================
-# Dev server
-# =========================
+# Start server
 if __name__ == "__main__":
-    # In production use a proper WSGI/ASGI server (gunicorn/uvicorn)
+    # In production right now currently using gunicorn, hosting on render and vercel
     app.run(host="0.0.0.0", port=5000, debug=True)
