@@ -31,14 +31,13 @@ except Exception:
 app = Flask(__name__, template_folder="templates", static_folder="static", static_url_path="/static")
 app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024
 
-# CSVs are stored at project root (no subfolder)
-
 # Set up Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "detections")
 SUPABASE_TABLE = os.getenv("SUPABASE_TABLE", "detections")
 SUPABASE = None
+SUPABASE_LAST_ERROR = None  # stores last insert error message (if any)
 
 try:
     if SUPABASE_URL and SUPABASE_KEY:
@@ -69,20 +68,46 @@ def supabase_upload_jpeg(content: bytes, path: str) -> str | None:
         return None
 
 # insert detection record into Supabase table
-def supabase_insert_detection(record: dict) -> None:
+def supabase_insert_detection(record: dict) -> bool:
+    """Insert a detection row into Supabase. Returns True on success.
+    Strategy:
+      1) Try as-is.
+      2) If unknown-column errors mention confidence_peak, retry after mapping
+         confidence_peak -> confidence and removing confidence_peak.
+    On error, stores message in SUPABASE_LAST_ERROR for diagnostics."""
+    global SUPABASE_LAST_ERROR
+    if not supabase_enabled():
+        return False
     try:
-        if not supabase_enabled():
-            return
-        SUPABASE.table(SUPABASE_TABLE).insert(record).execute()
-    except Exception:
-        pass
+        SUPABASE.table(SUPABASE_TABLE).insert(record).execute()  # type: ignore
+        SUPABASE_LAST_ERROR = None
+        return True
+    except Exception as e1:
+        # Fallback: map confidence_peak -> confidence and REMOVE confidence_peak
+        try:
+            rec2 = dict(record)
+            if 'confidence_peak' in rec2:
+                if 'confidence' not in rec2:
+                    rec2['confidence'] = rec2.get('confidence_peak')
+                # Ensure we do not send unknown column
+                rec2.pop('confidence_peak', None)
+            SUPABASE.table(SUPABASE_TABLE).insert(rec2).execute()  # type: ignore
+            SUPABASE_LAST_ERROR = None
+            return True
+        except Exception as e2:
+            SUPABASE_LAST_ERROR = f"insert failed: {getattr(e1,'message',e1)}; fallback failed: {getattr(e2,'message',e2)}"
+            try:
+                print('[supabase] insert error:', SUPABASE_LAST_ERROR)
+            except Exception:
+                pass
+            return False
 
+# fetch all detections from Supabase table
 def supabase_fetch_all_detections() -> list[dict]:
-    """Fetch all detections rows from Supabase table (best-effort)."""
     if not supabase_enabled():
         return []
     try:
-        res = SUPABASE.table(SUPABASE_TABLE).select("*").execute()  # type: ignore
+        res = SUPABASE.table(SUPABASE_TABLE).select("*").execute()
         data = getattr(res, 'data', None)
         if isinstance(data, list):
             return data
@@ -90,8 +115,8 @@ def supabase_fetch_all_detections() -> list[dict]:
         pass
     return []
 
+# export Supabase detections into local csv
 def supabase_export_detections_csv(path: str) -> bool:
-    """Export Supabase detections to a local CSV file matching our expected columns."""
     try:
         rows = supabase_fetch_all_detections()
         if not rows:
@@ -137,9 +162,8 @@ def sse_events():
         with _listeners_lock:
             _listeners.append(q)
         try:
-            # Initial ping
+            # Ok ik utcnow() is outdated but ive been using it since last year so I'm going to leave it for now
             yield f"data: {json.dumps({'type':'hello','ts':datetime.utcnow().isoformat()+'Z'})}\n\n"
-            # Heartbeat
             import time
             last_beat = time.time()
             while True:
@@ -165,7 +189,6 @@ def sse_events():
 def notify_routes():
     try:
         payload = request.get_json(force=True) or {}
-        # Assign a default type if not provided
         if 'type' not in payload:
             payload['type'] = 'routesUpdated'
         broadcast_routes_update(payload)
@@ -173,13 +196,16 @@ def notify_routes():
     except Exception as e:
         return add_cors(jsonify({ 'error': str(e) })), 400
 
-# Memory tracker for detections
+# Memory tracker for detections (one row per finalized detection)
 IOU_THRESHOLD = float(os.getenv("TRACK_IOU", 0.5))        # Not used when using Ultralytics IDs, kept for compatibility
 MAX_MISSED_FRAMES = int(os.getenv("TRACK_MAX_MISSED", 2)) # Finalize if not seen for this many consecutive frames + 1
+# Time-based finalizer: if a track hasn't updated for this many seconds, finalize it
+FINALIZE_INACTIVE_SECS = float(os.getenv("TRACK_FINALIZE_SECS", 1.5))
 TRACKS: dict[str, list[dict]] = {}
+TRACKS_LOCK = threading.Lock()
 
+# compute intersection of two boxes
 def _iou(a, b):
-    """Compute intersection-over-union (unused in current assignment by track ID)."""
     ax1, ay1, ax2, ay2 = a
     bx1, by1, bx2, by2 = b
     inter_x1 = max(ax1, bx1); inter_y1 = max(ay1, by1)
@@ -192,22 +218,15 @@ def _iou(a, b):
     union = area_a + area_b - inter
     return (inter / union) if union > 0 else 0.0
 
+# finalize track for detection
+# uploads images
 def _finalize_track(device_id: str, t: dict):
-    """
-    Finalize a track:
-    - compute duration
-    - upload best crop to storage (if present)
-    - append a single row to local CSV
-    - mirror to Supabase table
-    """
     start_dt = t["start_dt"]
     end_dt = t["last_dt"]
     duration_s = max(0.0, (end_dt - start_dt).total_seconds())
-    # Normalize to RFC3339 UTC
     start_ts = start_dt.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
     end_ts = end_dt.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
 
-    # Upload the best frame crop only if using real data (avoid Supabase during simulation)
     image_url = None
     if _active_source_is_real() and t.get("best_img_bytes"):
         img_uuid = t.get("id") or str(uuid.uuid4())
@@ -215,7 +234,7 @@ def _finalize_track(device_id: str, t: dict):
         img_path = f"{device_id}/{day}/{img_uuid}.jpg"
         image_url = supabase_upload_jpeg(t["best_img_bytes"], img_path)
 
-    # Append a single, finalized track row to local CSV (debug-friendly)
+    # Append a single track row to local CSV 
     out = Path("detections.csv")
     new_file = not out.exists()
     with out.open("a", newline="", encoding="utf-8") as f:
@@ -230,7 +249,7 @@ def _finalize_track(device_id: str, t: dict):
             t.get("best_lat"), t.get("best_lon"), t.get("best_conf"), image_url
         ])
 
-    # Mirror to Supabase only when using real data
+    # put data in Supabase only if using real data
     if _active_source_is_real():
         supabase_insert_detection({
             "detection_id": t.get("id"),
@@ -245,72 +264,100 @@ def _finalize_track(device_id: str, t: dict):
             "image_url": image_url,
         })
 
-    # Kick off a background recluster + route rebuild (debounced)
     try:
         schedule_recluster()
     except Exception:
         pass
 
-# =========================
-# Health check for Supabase
-# =========================
+# Background sweeper to finalize stale tracks even if no follow-up frames arrive
+def _track_sweeper_loop():
+    import time as _time
+    while True:
+        _time.sleep(0.5)
+        now_dt = datetime.utcnow()
+        to_finalize = []
+        with TRACKS_LOCK:
+            for device_id, dev_tracks in list(TRACKS.items()):
+                still = []
+                for t in dev_tracks:
+                    try:
+                        last_dt = t.get("last_dt")
+                        if not last_dt:
+                            still.append(t)
+                            continue
+                        idle_s = (now_dt - last_dt).total_seconds()
+                        if idle_s > FINALIZE_INACTIVE_SECS:
+                            to_finalize.append((device_id, t))
+                        else:
+                            still.append(t)
+                    except Exception:
+                        still.append(t)
+                TRACKS[device_id] = still
+        for device_id, t in to_finalize:
+            try:
+                _finalize_track(device_id, t)
+            except Exception:
+                pass
+
+# Start sweeper thread once at import time
+try:
+    threading.Thread(target=_track_sweeper_loop, daemon=True).start()
+except Exception:
+    pass
+
+# health check endpoint for app
+# show whether Supabase is connected
 @app.route("/api/supabase/status", methods=["GET"])
 def supabase_status():
-    """
-    Show whether Supabase is configured and reachable.
-    Also attempts a small storage upload/remove and a table select(*).
-    """
     info = {
         "configured": bool(SUPABASE_URL and SUPABASE_KEY),
         "enabled": supabase_enabled(),
         "url": bool(SUPABASE_URL),
         "bucket": SUPABASE_BUCKET,
         "table": SUPABASE_TABLE,
-        "tests": {}
+        "tests": {},
+        "last_insert_error": SUPABASE_LAST_ERROR,
     }
     if not supabase_enabled():
         return add_cors(jsonify(info))
 
-    # Storage test: create bucket (no-op if exists), upload small file, then remove it
+    # storage test (upload then delete)
     try:
         try:
-            SUPABASE.storage.create_bucket(SUPABASE_BUCKET, public=True)  # type: ignore
+            SUPABASE.storage.create_bucket(SUPABASE_BUCKET, public=True) 
         except Exception:
             pass
         test_path = f"_health/{uuid.uuid4()}.txt"
-        SUPABASE.storage.from_(SUPABASE_BUCKET).upload(  # type: ignore
+        SUPABASE.storage.from_(SUPABASE_BUCKET).upload(
             test_path,
             b"ok",
-            {"contentType": "text/plain", "upsert": "true"}  # strings to satisfy some client versions
+            {"contentType": "text/plain", "upsert": "true"}  
         )
-        # Some client versions require list for remove
+
         try:
-            SUPABASE.storage.from_(SUPABASE_BUCKET).remove(test_path)  # type: ignore
+            SUPABASE.storage.from_(SUPABASE_BUCKET).remove(test_path) 
         except Exception:
-            SUPABASE.storage.from_(SUPABASE_BUCKET).remove([test_path])  # type: ignore
+            SUPABASE.storage.from_(SUPABASE_BUCKET).remove([test_path])
         info["tests"]["storage"] = True
     except Exception as e:
         info["tests"]["storage"] = str(e)
 
-    # Table test: basic select
     try:
-        SUPABASE.table(SUPABASE_TABLE).select("*").limit(1).execute()  # type: ignore
+        SUPABASE.table(SUPABASE_TABLE).select("*").limit(1).execute()
         info["tests"]["table_select"] = True
     except Exception as e:
         info["tests"]["table_select"] = str(e)
 
     return add_cors(jsonify(info))
 
-# =========================
-# Background recluster pipeline
-# =========================
+# reclustering pipeline
 _recluster_lock = threading.Lock()
 _recluster_pending_keys: set[str] = set()
 
+# import class from cluster.py
 def _import_optimizer():
     try:
-        # Try package-style import first
-        from Data_analytics.cluster import PotholeRepairOptimizer  # type: ignore
+        from Data_analytics.cluster import PotholeRepairOptimizer
         return PotholeRepairOptimizer
     except Exception:
         try:
@@ -318,17 +365,17 @@ def _import_optimizer():
             p = Path("Data_analytics").resolve()
             if str(p) not in _sys.path:
                 _sys.path.insert(0, str(p))
-            from cluster import PotholeRepairOptimizer  # type: ignore
+            from cluster import PotholeRepairOptimizer 
             return PotholeRepairOptimizer
         except Exception:
             return None
 
+# run recluster process
 def _run_recluster(input_csv: str = "detections.csv") -> bool:
     Optimizer = _import_optimizer()
     if Optimizer is None:
         return False
     try:
-        # If using real data and Supabase is available, export latest before clustering
         if Path(input_csv).name == 'detections.csv' and supabase_enabled():
             supabase_export_detections_csv('detections.csv')
         opt = Optimizer(input_csv)
@@ -505,6 +552,43 @@ def supabase_delete_near_points(points: list[tuple[float,float]], tol_m: float) 
     """Delete Supabase detections within tolerance meters of any point. Returns count deleted (best-effort)."""
     if not supabase_enabled() or not points:
         return 0
+    try:
+        rows = supabase_fetch_all_detections()
+        if not rows:
+            return 0
+        tol_km = max(0.0, float(tol_m)) / 1000.0
+        to_delete: list[str] = []
+        for r in rows:
+            try:
+                lat = float(r.get('lat'))
+                lon = float(r.get('lon'))
+            except Exception:
+                continue
+            for plat, plon in points:
+                try:
+                    if _haversine_km(lat, lon, plat, plon) <= tol_km:
+                        det_id = r.get('detection_id')
+                        if det_id:
+                            to_delete.append(det_id)
+                        break
+                except Exception:
+                    continue
+        deleted = 0
+        if to_delete:
+            try:
+                SUPABASE.table(SUPABASE_TABLE).delete().in_('detection_id', to_delete).execute()  # type: ignore
+                deleted = len(to_delete)
+            except Exception:
+                # Fallback: delete individually
+                for d in to_delete:
+                    try:
+                        SUPABASE.table(SUPABASE_TABLE).delete().eq('detection_id', d).execute()  # type: ignore
+                        deleted += 1
+                    except Exception:
+                        pass
+        return deleted
+    except Exception:
+        return 0
 
 def _remove_ids_from_csv(csv_path: Path, ids: list[str]) -> int:
     """Remove rows whose detection_id is in ids from a CSV. Returns number removed."""
@@ -558,43 +642,6 @@ def supabase_delete_ids(ids: list[str]) -> int:
             except Exception:
                 pass
         return deleted
-    try:
-        rows = supabase_fetch_all_detections()
-        if not rows:
-            return 0
-        tol_km = max(0.0, float(tol_m)) / 1000.0
-        to_delete: list[str] = []
-        for r in rows:
-            try:
-                lat = float(r.get('lat'))
-                lon = float(r.get('lon'))
-            except Exception:
-                continue
-            for plat, plon in points:
-                try:
-                    if _haversine_km(lat, lon, plat, plon) <= tol_km:
-                        det_id = r.get('detection_id')
-                        if det_id:
-                            to_delete.append(det_id)
-                        break
-                except Exception:
-                    continue
-        deleted = 0
-        if to_delete:
-            try:
-                SUPABASE.table(SUPABASE_TABLE).delete().in_('detection_id', to_delete).execute()  # type: ignore
-                deleted = len(to_delete)
-            except Exception:
-                # Fallback: delete individually
-                for d in to_delete:
-                    try:
-                        SUPABASE.table(SUPABASE_TABLE).delete().eq('detection_id', d).execute()  # type: ignore
-                        deleted += 1
-                    except Exception:
-                        pass
-        return deleted
-    except Exception:
-        return 0
 
 @app.route('/api/routes/fix', methods=['POST','OPTIONS'])
 def api_fix_route():
@@ -611,7 +658,8 @@ def api_fix_route():
         meta_src = None
         try:
             with Path('work_orders_meta.json').open('r', encoding='utf-8') as f:
-                meta_src = (json.load(f) or {}).get('source_path') or (json.load(f) or {}).get('source_csv')
+                meta = json.load(f) or {}
+                meta_src = meta.get('source_path') or meta.get('source_csv')
         except Exception:
             meta_src = None
         source = payload.get('source')
@@ -857,6 +905,7 @@ def api_detect():
         lat = _f("lat"); lon = _f("lon")
         client_ts = request.form.get("timestamp")
         now_dt = datetime.utcnow()  # naive UTC is OK; we normalize when finalizing
+        # No per-frame streaming; detections are logged on finalization only
 
         # Run model with built-in tracker (ByteTrack) and persistent state
         import numpy as _np
@@ -865,7 +914,8 @@ def api_detect():
         detections = []  # returned to client for overlay
 
         # Per-device track list
-        dev_tracks = TRACKS.setdefault(device_id, [])
+        with TRACKS_LOCK:
+            dev_tracks = TRACKS.setdefault(device_id, [])
         matched_track_ids = set()
 
         def crop_bytes(bbox):
@@ -903,16 +953,18 @@ def api_detect():
         # Sort by confidence so the "best" frame tends to overwrite earlier crops
         frame_dets.sort(key=lambda d: d["confidence"], reverse=True)
 
-        # Update or create tracks by tracker ID
+        # No streaming writes here
+
+        # Update or create tracks strictly by ByteTrack tracker ID (Ultralytics)
         for det in frame_dets:
             # For overlay (doesn't include track_id on purpose)
             detections.append({k: det[k] for k in ["bbox","confidence","cls"]})
             tid = det.get("track_id")
             if tid is None:
-                # If tracker hasn't assigned an ID yet, skip track aggregation for this det
+                # No tracker assignment yet; skip aggregation this frame to avoid per-frame logging
                 continue
 
-            # Look for an existing track with the same track_id
+            # With a tracker ID: look for existing track
             t = next((x for x in dev_tracks if x.get("track_id") == tid), None)
             if t is None:
                 # Start a new track for this object
@@ -947,12 +999,13 @@ def api_detect():
             if t.get("track_id") in matched_track_ids:
                 still_active.append(t)
             else:
-                t["missed"] += 1
+                t["missed"] = int(t.get("missed", 0)) + 1
                 if t["missed"] > MAX_MISSED_FRAMES:
                     _finalize_track(device_id, t)
                 else:
                     still_active.append(t)
-        TRACKS[device_id] = still_active
+        with TRACKS_LOCK:
+            TRACKS[device_id] = still_active
 
         # Return overlay info and image dimensions
         return add_cors(jsonify({"detections": detections, "size": [w, h], "yolo": True}))
@@ -972,22 +1025,50 @@ def api_log():
     if request.method == "OPTIONS":
         return add_cors(make_response("", 204))
     try:
-        payload = request.get_json(force=True)
-        ts = payload.get("timestamp") or datetime.utcnow().isoformat()
-        lat = payload.get("lat"); lon = payload.get("lon"); conf = payload.get("confidence_peak") or payload.get("confidence")
+        payload = request.get_json(force=True) or {}
+        # Standardized schema to match finalized detection rows
+        detection_id = payload.get("detection_id") or str(uuid.uuid4())
+        cls_name = payload.get("cls") or "pothole"
+        ts = payload.get("timestamp") or datetime.utcnow().replace(tzinfo=timezone.utc).isoformat().replace("+00:00","Z")
+        start_ts = payload.get("start_timestamp") or ts
+        end_ts = payload.get("end_timestamp") or ts
+        try:
+            duration_s = float(payload.get("duration_s") or 0.0)
+        except Exception:
+            duration_s = 0.0
+        lat = payload.get("lat")
+        lon = payload.get("lon")
+        conf = payload.get("confidence_peak") or payload.get("confidence")
+        device_id = request.headers.get("X-Device-ID") or request.args.get("device_id") or payload.get("device_id") or None
+
         out = Path("detections.csv"); new_file = not out.exists()
         with out.open("a", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             if new_file:
-                w.writerow(["timestamp", "lat", "lon", "confidence_peak", "device_id", "image_url"])
-            device_id = request.headers.get("X-Device-ID") or request.args.get("device_id") or None
-            w.writerow([ts, lat, lon, conf, device_id, None])
+                w.writerow([
+                    "detection_id","device_id","cls","start_timestamp","end_timestamp","duration_s",
+                    "lat","lon","confidence_peak","image_url"
+                ])
+            w.writerow([
+                detection_id, device_id, cls_name, start_ts, end_ts, f"{duration_s:.3f}",
+                lat, lon, conf, None
+            ])
+
         # Mirror to Supabase only when using real data (avoid cross-contamination during simulation)
         if _active_source_is_real():
             supabase_insert_detection({
-                "timestamp": ts, "device_id": device_id, "lat": lat, "lon": lon, "confidence_peak": conf, "image_url": None,
+                "detection_id": detection_id,
+                "device_id": device_id,
+                "cls": cls_name,
+                "start_timestamp": start_ts,
+                "end_timestamp": end_ts,
+                "duration_s": duration_s,
+                "lat": lat,
+                "lon": lon,
+                "confidence_peak": conf,
+                "image_url": None,
             })
-        return add_cors(jsonify({"logged": True}))
+        return add_cors(jsonify({"logged": True, "detection_id": detection_id}))
     except Exception as e:
         return add_cors(jsonify({"error": str(e)})), 400
 
@@ -1107,14 +1188,15 @@ def download_detections():
         return add_cors(send_file(io.BytesIO(mem.getvalue().encode('utf-8')), as_attachment=True, download_name='detections.csv', mimetype='text/csv'))
     return add_cors(send_from_directory(directory=str(out.parent), path=out.name, as_attachment=True))
 
+def _active_source_is_real() -> bool:
+    try:
+        return _load_detections_source() == 'real'
+    except Exception:
+        return False
+
 # =========================
 # Dev server
 # =========================
 if __name__ == "__main__":
     # In production use a proper WSGI/ASGI server (gunicorn/uvicorn)
     app.run(host="0.0.0.0", port=5000, debug=True)
-def _active_source_is_real() -> bool:
-    try:
-        return _load_detections_source() == 'real'
-    except Exception:
-        return False

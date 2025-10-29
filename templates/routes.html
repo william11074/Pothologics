@@ -92,6 +92,7 @@
     const routeFilter = document.getElementById('routeFilter');
     const legend = document.getElementById('legend');
     const chkDetections = document.getElementById('chkDetections');
+    let workOrdersMeta = { source_path: null, source_csv: null };
 
     // generate leaflet map
     const map = L.map('map').setView([37.7749, -122.4194], 12);
@@ -382,10 +383,11 @@
     });
 
     // Try loading by default on first visit
-    // Load saved colors, then detections, then routes
-    fetch('/api/routes/colors').then(r => r.ok ? r.json() : { colors: {} }).then(data => {
-      savedRouteColors = data.colors || {};
-    }).catch(() => { savedRouteColors = {}; }).finally(() => {
+    // Load saved colors and meta first, then detections and routes
+    Promise.all([
+      fetch('/api/routes/colors').then(r => r.ok ? r.json() : { colors: {} }).then(data => { savedRouteColors = data.colors || {}; }).catch(() => { savedRouteColors = {}; }),
+      fetch('/api/routes/meta').then(r => r.ok ? r.json() : {}).then(meta => { workOrdersMeta = meta || {}; }).catch(() => { workOrdersMeta = {}; })
+    ]).finally(() => {
       loadDetections();
       loadDefault();
     });

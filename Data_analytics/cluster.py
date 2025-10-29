@@ -3,12 +3,13 @@ import numpy as np
 import json
 import os
 from pathlib import Path
+from typing import Optional
 from sklearn.cluster import DBSCAN
 from scipy.spatial.distance import cdist
 from shapely.geometry import MultiPoint
 import datetime
 
-def _resolve_default_csv(explicit_path: str | None = None) -> str:
+def _resolve_default_csv(explicit_path: Optional[str] = None) -> str:
     """Resolve which detections CSV to use automatically.
     Priority: explicit_path > detections_source.json > env DETECTIONS_SOURCE > whichever exists.
     """
@@ -40,9 +41,12 @@ def _resolve_default_csv(explicit_path: str | None = None) -> str:
 
 class PotholeRepairOptimizer:
     # filepath may be None for auto-selection
-    def __init__(self, filepath: str | None = None):
+    def __init__(self, filepath: Optional[str] = None):
         csv_path = _resolve_default_csv(filepath)
-        self.df = pd.read_csv(csv_path)
+        try:
+            self.df = pd.read_csv(csv_path)
+        except FileNotFoundError:
+            self.df = pd.DataFrame(columns=['latitude','longitude'])
         self.cluster_routes = {}
         self.route_stats = {}
         self.cluster_polygons = {}
@@ -65,6 +69,9 @@ class PotholeRepairOptimizer:
     # eps_km is the maximum distance between two samples for one to be considered
     # min_samples is the minimum number of potholes per cluster needed
     def cluster_potholes(self, eps_km=0.3, min_samples=3):
+        if self.df.empty:
+            self.labels = np.array([])
+            return self.df
         if not {'latitude','longitude'}.issubset(self.df.columns):
             raise ValueError("Input must have latitude/longitude columns (or lat/lon).")
         coords = self.df[['latitude', 'longitude']].values
@@ -109,6 +116,11 @@ class PotholeRepairOptimizer:
     # repair_time_mins is the average time to repair reach pothole
     # input data is used to estimate the repair time per route
     def optimize_routes(self, speed_kmh=30, repair_time_mins=15):
+        # Handle cases where clustering hasn't produced labels
+        if not hasattr(self, 'labels') or self.df.empty:
+            self.cluster_routes = {}
+            self.route_stats = {}
+            return self.cluster_routes, self.route_stats
         unique_clusters = [int(c) for c in np.unique(self.labels) if c != -1]
         for idx, cluster_label in enumerate(sorted(unique_clusters)):
             route_id = idx + 1
@@ -165,7 +177,13 @@ class PotholeRepairOptimizer:
     # put the work orders into csv file
     def generate_work_orders_csv(self, filename="work_orders.csv"):
         if not self.cluster_routes:
-            raise ValueError("Run optimize_routes() first")
+            # Write header-only CSV for graceful empty state
+            cols = [
+                'route_id','route_order','route_color','latitude','longitude','report_date',
+                'total_km','total_time_mins','repair_time_mins'
+            ]
+            pd.DataFrame(columns=cols).to_csv(filename, index=False)
+            return filename
 
         # # Load road colors from JSON file (code should be redundant now because colors are generated directly from the JSON file when showing on the website)
         # colors_map = {}
@@ -209,7 +227,12 @@ class PotholeRepairOptimizer:
     # route summary csv generation, for summary statistics only
     def generate_route_summary_csv(self, filename="route_summary.csv"):
         if not self.cluster_routes:
-            raise ValueError("Run optimize_routes() first")
+            cols = [
+                'route_id','num_potholes','total_km','total_time_mins','repair_time_mins',
+                'start_lat','start_lon','end_lat','end_lon','centroid_lat','centroid_lon'
+            ]
+            pd.DataFrame(columns=cols).to_csv(filename, index=False)
+            return filename
 
         rows = []
         for route_id, route_df in self.cluster_routes.items():
