@@ -1,21 +1,30 @@
 {
   "version": 2,
-  "routes": [
-    { "src": "^/$", "dest": "templates/index.html" },
-    { "src": "^/index(?:\\.html)?$", "dest": "templates/index.html" },
-    { "src": "^/detect(?:\\.html)?$", "dest": "templates/detect.html" },
-    { "src": "^/routes(?:\\.html)?$", "dest": "templates/routes.html" },
-    { "src": "^/map(?:\\.html)?$", "dest": "templates/map.html" },
-    { "src": "^/static/(.*)$", "dest": "static/$1" },
-    { "src": "^/(manifest\\.webmanifest|sw\\.js)$", "dest": "static/$1" }
-  ],
+  "cleanUrls": true,
+  "trailingSlash": false,
   "rewrites": [
+    { "source": "/", "destination": "/templates/index.html" },
+    { "source": "/index", "destination": "/templates/index.html" },
+    { "source": "/detect", "destination": "/templates/detect.html" },
+    { "source": "/routes", "destination": "/templates/routes.html" },
+    { "source": "/map", "destination": "/templates/map.html" },
+    { "source": "/manifest.webmanifest", "destination": "/static/manifest.webmanifest" },
+    { "source": "/sw.js", "destination": "/static/sw.js" },
+    { "source": "/static/:path*", "destination": "/static/:path*" },
+
     { "source": "/api/:path*", "destination": "https://YOUR-BACKEND-HOST/api/:path*" },
     { "source": "/events", "destination": "https://YOUR-BACKEND-HOST/events" },
     { "source": "/work_orders.csv", "destination": "https://YOUR-BACKEND-HOST/work_orders.csv" },
     { "source": "/detections.csv", "destination": "https://YOUR-BACKEND-HOST/detections.csv" },
     { "source": "/detections_simulated.csv", "destination": "https://YOUR-BACKEND-HOST/detections_simulated.csv" },
     { "source": "/route_summary.csv", "destination": "https://YOUR-BACKEND-HOST/route_summary.csv" }
+  ],
+  "headers": [
+    {
+      "source": "/manifest.webmanifest",
+      "headers": [
+        { "key": "Content-Type", "value": "application/manifest+json" }
+      ]
+    }
   ]
 }
-
