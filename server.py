@@ -69,29 +69,21 @@ def supabase_upload_jpeg(content: bytes, path: str) -> str | None:
 
 # insert detection record into Supabase table
 def supabase_insert_detection(record: dict) -> bool:
-    """Insert a detection row into Supabase. Returns True on success.
-    Strategy:
-      1) Try as-is.
-      2) If unknown-column errors mention confidence_peak, retry after mapping
-         confidence_peak -> confidence and removing confidence_peak.
-    On error, stores message in SUPABASE_LAST_ERROR for diagnostics."""
     global SUPABASE_LAST_ERROR
     if not supabase_enabled():
         return False
     try:
-        SUPABASE.table(SUPABASE_TABLE).insert(record).execute()  # type: ignore
+        SUPABASE.table(SUPABASE_TABLE).insert(record).execute()
         SUPABASE_LAST_ERROR = None
         return True
     except Exception as e1:
-        # Fallback: map confidence_peak -> confidence and REMOVE confidence_peak
         try:
             rec2 = dict(record)
             if 'confidence_peak' in rec2:
                 if 'confidence' not in rec2:
                     rec2['confidence'] = rec2.get('confidence_peak')
-                # Ensure we do not send unknown column
                 rec2.pop('confidence_peak', None)
-            SUPABASE.table(SUPABASE_TABLE).insert(rec2).execute()  # type: ignore
+            SUPABASE.table(SUPABASE_TABLE).insert(rec2).execute() 
             SUPABASE_LAST_ERROR = None
             return True
         except Exception as e2:
