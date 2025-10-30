@@ -9,6 +9,4 @@ Shapely==2.1.2
 supabase==2.22.2
 ultralytics==8.3.221
 scikit_learn==1.7.2
-scipy==1.16.2
-Shapely==2.1.2
 gunicorn==21.2.0
