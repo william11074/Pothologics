@@ -18,9 +18,9 @@ Data_analytics
     simulate_data.py [simulates test data] 
 static
     img [images on website]
-    manifest.webmanifest [PWA]
+    manifest.webmanifest [PWA for mobile compatibility]
     style.css [CSS]
-    sw.js [PWA]
+    sw.js [PWA for mobile compatibility]
 templates
     detect.html [detection page, implements YOLO model]
     index.html [home page]
@@ -44,6 +44,7 @@ work_orders.csv [generated work orders from cluster.py]
 vercel.json [used to host server on vercel]
 
 Note:
-AI assistance was used to create frontend design
+AI assistance was used to aid in frontend design
 
-https://localtunnel.lt/mytunnelpassword
+Hosted app on Render:
+https://crater-app-6z9g.onrender.com 
