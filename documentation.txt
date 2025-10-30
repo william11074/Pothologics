@@ -7,7 +7,7 @@ pip install -r requirements.txt
 python server.py
 lt --port 5000
 
-Things needed to be fixed:
+Future improvements:
 routes.html does not implement map.html directly so the code for displaying data on the leaflet map is written twice
 
 File Documentation:
@@ -42,6 +42,7 @@ work_orders_meta.json [metadata for work order generation]
 work_orders.csv [generated work orders from cluster.py]
 
 vercel.json [used to host server on vercel]
+procfile [used to host server on Render]
 
 Note:
 AI assistance was used to aid in frontend design
